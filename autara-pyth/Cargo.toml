@@ -1,0 +1,23 @@
+[package]
+name = "autara-pyth"
+version = "0.1.0"
+edition = "2021"
+
+
+[dependencies]
+
+autara-lib.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+autara-oracle.workspace = true
+tokio.workspace = true
+arch_program.workspace = true
+arch_sdk.workspace = true
+borsh.workspace = true
+bytemuck.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+hex.workspace = true
+clap.workspace = true

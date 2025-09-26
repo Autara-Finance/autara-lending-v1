@@ -1,0 +1,13 @@
+[package]
+name = "autara-program-lib"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+arch_program.workspace = true
+apl-token.workspace = true
+apl-associated-token-account.workspace = true
+borsh.workspace = true
+bytemuck.workspace = true
+num_enum.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "autara-integration-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+autara-lib = { workspace = true, features = ["client"] }
+autara-client = { workspace = true }
+autara-program = { workspace = true }
+apl-token = { workspace = true }
+arch_sdk = { workspace = true }
+
+tokio = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }

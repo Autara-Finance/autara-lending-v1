@@ -1,0 +1,34 @@
+- Install bitcoin core : https://bitcoincore.org/
+- Install Titan :  https://github.com/SaturnBTC/Titan
+- Install the latest arch binaries : https://github.com/Arch-Network/arch-node/releases
+
+Run local bitcoin node on regtest :
+bitcoind -regtest -port=18444 -rpcport=18443 -rpcuser=bitcoin -rpcpassword=bitcoinpass -fallbackfee=0.001
+
+
+
+Create a new wallet
+
+bitcoin-cli -regtest -rpcport=18443  -rpcpassword=bitcoinpass -rpcuser=bitcoin createwallet testwallet
+
+bitcoin-cli -regtest -rpcport=18443 -rpcpassword=bitcoinpass -rpcuser=bitcoin loadwallet testwallet
+
+bitcoin-cli -regtest -rpcport=18443 -rpcpassword=bitcoinpass -rpcuser=bitcoin getnewaddress
+
+bitcoin-cli -regtest -rpcport=18443 -rpcpassword=bitcoinpass -rpcuser=bitcoin generatetoaddress 101 <new_address>
+
+Run titan indexer :
+
+cargo run --bin titan -- --bitcoin-rpc-url http://127.0.0.1:18443 --bitcoin-rpc-username bitcoin --bitcoin-rpc-password bitcoinpass --chain regtest --index-addresses --index-bitcoin-transactions --enable-tcp-subscriptions --main-loop-interval 0 --http-listen 127.0.0.1:3030
+
+Start arch local validator :
+
+ <arch_local_validator_binary_path> --network-mode devnet --rpc-bind-ip 127.0.0.1 --rpc-bind-port 9002 --titan-endpoint http://127.0.0.1:3030 --titan-socket-endpoint 127.0.0.1:8080
+
+Now you should be able to interact with arch on http://localhost:9002/  on network bitcoin::Network::Regtest
+
+Same for bitcoin on http://127.0.0.1:18443/wallet/testwallet
+
+If you have error like :  “Unconfirmed UTXOs are available, but spending them creates a chain of transactions that will be rejected by the mempool” when anchoring an account
+
+You should run : bitcoin-cli -regtest -rpcport=18443 -rpcpassword=bitcoinpass -rpcuser=bitcoin generatetoaddress 1 <new_address>

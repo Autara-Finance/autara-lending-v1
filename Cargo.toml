@@ -1,0 +1,68 @@
+[workspace]
+members = ["autara-*", "programs/autara-*"]
+resolver = "2"
+
+[workspace.dependencies]
+
+# Local workspace dependencies
+autara-client = { path = "autara-client" }
+autara-lib = { path = "autara-lib" }
+autara-pyth = { path = "autara-pyth" }
+autara-program = { path = "programs/autara-program" }
+autara-program-lib = { path = "autara-program-lib" }
+autara-oracle = { path = "programs/autara-oracle" }
+
+# Arch dependencies
+arch_sdk = { version = "0.5.12" }
+arch_program = { version = "0.5.12" }
+apl-token = { version = "0.5.12", features = ["no-entrypoint"] }
+apl-associated-token-account = { version = "0.5.12", features = ["no-entrypoint"] }
+
+
+bitcoincore-rpc-async = { version = "3.0" }
+
+# Core serialization and data handling
+borsh = { version = "1.5.1", features = ["derive"] }
+serde = { version = "1.0.214", features = ["derive"] }
+serde_with = { version = "3.11.0" }
+serde_json = { version = "1.0.132" }
+
+# Numeric and binary utilities
+fixed = { version = "1.29.0", features = ["serde", "serde-str", "borsh"] }
+bytemuck = { version = "1.19.0" }
+arrayref = { version = "0.3.9" }
+base64 = { version = "0.22.1" }
+hex = { version = "0.4.3" }
+hex-literal = { version = "0.4.1" }
+
+# Async runtime and utilities
+tokio = { version = "1.42.0", features = ["full"] }
+async-trait = { version = "0.1.83" }
+futures = { version = "0.3.30" }
+pin-project = "1.1.10"
+
+# HTTP client/server and networking
+reqwest = { version = "0.12.9", features = ["json"] }
+jsonrpsee = { version = "0.24.7", features = ["full"] }
+tower = { version = "=0.4.13" }
+tower-http = { version = "0.6.2", features = ["cors", "trace"] }
+axum = { version = "*", features = ["json"] }
+
+# Error handling and diagnostics
+thiserror = { version = "2.0.3" }
+anyhow = { version = "1.0.93" }
+
+# Logging, tracing, and metrics
+tracing = { version = "0.1.41" }
+tracing-subscriber = { version = "0.3.19", features = ["fmt", "env-filter"] }
+prometheus = "*"
+
+# CLI and configuration
+clap = { version = "4.5.23", features = ["derive"] }
+
+# Utilities and misc
+regex = { version = "1.11.1" }
+num_enum = { version = "0.7.3" }
+dashmap = { version = "6.1.0" }
+auto_impl = { version = "1.2.0" }
+uuid = { version = "1.0", features = ["v4"] }

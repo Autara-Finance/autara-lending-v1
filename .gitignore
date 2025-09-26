@@ -1,0 +1,9 @@
+target
+.arch_data
+.arch_local
+app.log
+new_txns.txt
+new_blocks.txt
+authority.key
+user.key
+.DS_Store
