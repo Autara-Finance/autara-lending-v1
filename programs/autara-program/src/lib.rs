@@ -26,7 +26,6 @@ use crate::{
 
 pub mod error;
 pub mod ixs;
-pub mod log;
 pub mod processor;
 pub mod state;
 pub mod utils;
@@ -211,7 +210,6 @@ pub fn autara_process_instruction<'a>(
         }
         AurataInstruction::Log => {
             let _check_accounts = LogAccounts::from_accounts(&mut accounts_iter)?;
-            log::log(instruction_data);
             Ok(())
         }
     }

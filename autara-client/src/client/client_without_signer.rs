@@ -44,6 +44,7 @@ impl<T: AutaraReadClient> AutaraFullClientWithoutSigner<T> {
 
     pub fn tx_broadcast(&self) -> AutaraTxBroadcast {
         AutaraTxBroadcast {
+            program_id: self.read_client.autara_program_id(),
             arch_client: &self.arch_client,
         }
     }

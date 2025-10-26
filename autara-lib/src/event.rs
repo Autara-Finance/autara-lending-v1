@@ -1,5 +1,4 @@
 use arch_program::pubkey::Pubkey;
-use base64::{prelude::BASE64_STANDARD, Engine};
 use borsh::{BorshDeserialize, BorshSerialize};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
@@ -158,45 +157,6 @@ impl AutaraEvent {
         AutaraEvent::deserialize(cursor).ok()
     }
 }
-const EVENT_START_PREFFIX: &str = "Program log: event_start";
-const EVENT_END_PREFFIX: &str = "Program log: event_end";
-
-pub const MAX_EVENT_SIZE_CHAR: usize = 255;
-pub const MAX_EVENT_SIZE: usize = MAX_EVENT_SIZE_CHAR * 3 / 4;
-
-pub fn event_chunks(logs: impl IntoIterator<Item = impl AsRef<str>>) -> Vec<Vec<u8>> {
-    let mut chunks = Vec::new();
-    let mut current_chunk = Vec::new();
-    let mut inside_log = false;
-    for log in logs {
-        let log = log.as_ref();
-        if log.starts_with(EVENT_START_PREFFIX) {
-            if !current_chunk.is_empty() {
-                #[cfg(feature = "client")]
-                {
-                    tracing::error!(
-                        "Invalid log sequence, unclosed event found, event will be discarded"
-                    )
-                }
-            }
-            current_chunk = Vec::with_capacity(MAX_EVENT_SIZE);
-            inside_log = true;
-        } else if log.starts_with(EVENT_END_PREFFIX) {
-            if !current_chunk.is_empty() {
-                chunks.push(current_chunk);
-                current_chunk = Vec::with_capacity(MAX_EVENT_SIZE);
-            }
-            inside_log = false;
-        } else if inside_log {
-            if let Ok(data) = BASE64_STANDARD.decode(log) {
-                current_chunk.extend(data);
-            } else {
-                println!("Invalid log sequence, unclosed event found, event will be discarded")
-            }
-        }
-    }
-    chunks
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(
@@ -208,16 +168,44 @@ pub struct AutaraEvents {
     pub events: Vec<AutaraEvent>,
 }
 
-impl AutaraEvents {
-    pub fn from_logs(logs: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
-        let events_bytes = event_chunks(logs);
-        let mut events = Vec::with_capacity(events_bytes.len());
-        for bytes in events_bytes {
-            if let Some(event) = AutaraEvent::from_bytes(&bytes) {
-                events.push(event);
+#[cfg(feature = "client")]
+pub mod client {
+    use super::*;
+    use arch_sdk::ProcessedTransaction;
+
+    impl AutaraEvents {
+        pub fn from_processed_tx(
+            tx: &ProcessedTransaction,
+            validate_program_id: impl Fn(&Pubkey) -> bool,
+        ) -> Self {
+            AutaraEvents {
+                events: get_ix_data_with_program_ids(tx)
+                    .filter_map(|ix| {
+                        if validate_program_id(ix.0) {
+                            AutaraEvent::from_bytes(ix.1)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
             }
         }
-        AutaraEvents { events }
+    }
+
+    pub fn get_ix_data_with_program_ids(
+        tx: &ProcessedTransaction,
+    ) -> impl Iterator<Item = (&arch_program::pubkey::Pubkey, &[u8])> {
+        tx.inner_instructions_list
+            .iter()
+            .flat_map(|ixs| ixs.iter())
+            .filter_map(|ix| {
+                Some((
+                    tx.runtime_transaction
+                        .message
+                        .get_account_key(ix.instruction.program_id_index as _)?,
+                    ix.instruction.data.as_slice(),
+                ))
+            })
     }
 }
 

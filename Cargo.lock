@@ -117,9 +117,9 @@ dependencies = [
 
 [[package]]
 name = "apl-associated-token-account"
-version = "0.5.12"
+version = "0.5.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dfc8ccf002b5daa3b66e9d8e0666282bcb8f3cba8489ad65449009edd40e59b"
+checksum = "4b35bc8d3219f4a4e3b7088c6a92b6c51a5bd554e01d694acff40d7b94f5e39b"
 dependencies = [
  "apl-token",
  "arch_program",
@@ -136,9 +136,9 @@ dependencies = [
 
 [[package]]
 name = "apl-token"
-version = "0.5.12"
+version = "0.5.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "871b2d7dd0277f79bae22618e034c6ed2d364f0438ba6ceb5cf70192a9de2d52"
+checksum = "25b7dce124a275e4314b7346f29168fc40f012fa1212ed60e1e35ff63bb3fd96"
 dependencies = [
  "arch_program",
  "arrayref",
@@ -154,10 +154,11 @@ dependencies = [
 
 [[package]]
 name = "arch_program"
-version = "0.5.12"
+version = "0.5.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a9243ac5a2f41986c47f75be4b5adace60710880acc96203e1c757066e9b15a"
+checksum = "a814b77faddad1a60dd5dcbfab7ad2d7bb4205eda150194b6a03b8091e4d7fd8"
 dependencies = [
+ "base64 0.22.1",
  "bincode",
  "bitcode",
  "bitcoin 0.32.5",
@@ -183,9 +184,9 @@ dependencies = [
 
 [[package]]
 name = "arch_sdk"
-version = "0.5.12"
+version = "0.5.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f2fda4fea2e64836f0a938d54474a5ae79cf24050e06caaa2344a67ec04d3dc"
+checksum = "a7b783d56191ad21c9e1e76c305eaf35c6a1cce7c137397fc20700fabffb6d7b"
 dependencies = [
  "anyhow",
  "arch_program",

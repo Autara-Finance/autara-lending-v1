@@ -4,5 +4,5 @@ program-build:
 program-test: program-build
 	cargo nextest run --no-fail-fast -j 24
 
-deploy:
+deploy: program-build
 	cargo run --bin deploy

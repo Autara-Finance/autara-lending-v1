@@ -1,8 +1,12 @@
-use arch_sdk::{AsyncArchRpcClient, ProcessedTransaction, RuntimeTransaction, Status};
+use arch_sdk::{
+    arch_program::pubkey::Pubkey, AsyncArchRpcClient, ProcessedTransaction, RuntimeTransaction,
+    Status,
+};
 use autara_lib::event::AutaraEvents;
 use regex::Regex;
 
 pub struct AutaraTxBroadcast<'a> {
+    pub program_id: &'a Pubkey,
     pub arch_client: &'a AsyncArchRpcClient,
 }
 
@@ -15,14 +19,15 @@ impl<'a> AutaraTxBroadcast<'a> {
         tracing::info!("Sending tx {:?}", sig);
         let tx = self.arch_client.send_transaction(transaction).await?;
         let processed = self.arch_client.wait_for_processed_transaction(&tx).await?;
-        parse_processed_autara_tx(processed)
+        parse_processed_autara_tx(processed, self.program_id)
     }
 }
 
 pub fn parse_processed_autara_tx(
     processed: ProcessedTransaction,
+    program_id: &Pubkey,
 ) -> Result<AutaraEvents, AutaraClientError> {
-    match processed.status {
+    match &processed.status {
         Status::Queued => {
             tracing::info!("Transaction QUEUED, waiting for processing...");
             Err(AutaraClientError::Other(anyhow::anyhow!(
@@ -31,7 +36,7 @@ pub fn parse_processed_autara_tx(
             )))
         }
         Status::Processed => {
-            let events = AutaraEvents::from_logs(&processed.logs);
+            let events = AutaraEvents::from_processed_tx(&processed, |x| x == program_id);
             tracing::info!("Transaction PROCESSED, events = {:?}", events);
             Ok(events)
         }
@@ -48,7 +53,7 @@ pub fn parse_processed_autara_tx(
             match error {
                 Some(kind) => Err(AutaraClientError::AutaraTxError {
                     kind,
-                    events: AutaraEvents::from_logs(&processed.logs),
+                    events: AutaraEvents::from_processed_tx(&processed, |x| x == program_id),
                     logs: processed.logs,
                 }),
                 None => Err(AutaraClientError::Other(anyhow::anyhow!(
