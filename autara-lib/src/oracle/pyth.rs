@@ -4,7 +4,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::{
     constant::MAX_EXPONENT_ABS,
-    error::{LendingError, LendingResult},
+    error::{LendingError, LendingResult, LendingResultExt},
     oracle::{
         oracle_price::OracleRate,
         oracle_provider::{AccountView, OracleLoader, UncheckedOracleRate},
@@ -29,7 +29,8 @@ impl OracleLoader for PythProvider {
         view: AccountView<D>,
     ) -> LendingResult<UncheckedOracleRate> {
         if *view.owner != self.program_id {
-            return Err(LendingError::InvalidPythOracleAccount.into());
+            return Err(LendingError::InvalidPythOracleAccount.into())
+                .with_msg("Invalid program id");
         }
         let pyth_price = bytemuck::try_from_bytes::<PythPriceAccount>(&view.data)
             .map_err(|_| LendingError::InvalidPythOracleAccount)?;
@@ -39,7 +40,7 @@ impl OracleLoader for PythProvider {
         if pyth_price.pyth_price.price.expo > MAX_EXPONENT_ABS
             || pyth_price.pyth_price.price.expo < -MAX_EXPONENT_ABS
         {
-            return Err(LendingError::InvalidPythOracleAccount.into());
+            return Err(LendingError::InvalidPythOracleAccount.into()).with_msg("Invalid exponent");
         }
         let expo = pyth_price.pyth_price.price.expo as i8;
         Ok(UncheckedOracleRate::new(

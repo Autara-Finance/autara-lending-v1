@@ -114,6 +114,7 @@ where
     fn from(err: ErrorWithContext<T>) -> Self {
         LendingProgramError(ErrorWithContext {
             error: LendingProgramErrorKind::from(err.error),
+            msg: err.msg,
             stack: err.stack,
         })
     }

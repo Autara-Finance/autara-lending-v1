@@ -196,7 +196,8 @@ impl Market {
     pub fn redeem_protocol_fees(&mut self) -> LendingResult<u64> {
         let atoms = self.supply_vault.redeem_protocol_fees()?;
         if self.supply_vault.utilisation_rate()? > IFixedPoint::one() {
-            return Err(LendingError::WithdrawalExceedsReserves.into());
+            return Err(LendingError::WithdrawalExceedsReserves.into())
+                .with_msg("protocol fee redemption");
         }
         Ok(atoms)
     }
@@ -204,7 +205,8 @@ impl Market {
     pub fn redeem_curator_fess(&mut self) -> LendingResult<u64> {
         let atoms = self.supply_vault.redeem_curator_fees()?;
         if self.supply_vault.utilisation_rate()? > IFixedPoint::one() {
-            return Err(LendingError::WithdrawalExceedsReserves.into());
+            return Err(LendingError::WithdrawalExceedsReserves.into())
+                .with_msg("curator fee redemption");
         }
         Ok(atoms)
     }

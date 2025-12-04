@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::{
-    error::{LendingError, LendingResult},
+    error::{LendingError, LendingResult, LendingResultExt},
     interest_rate::interest_rate::InterestRate,
     math::rounding::RoundingMode,
 };
@@ -148,7 +148,7 @@ impl SharesTracker {
 
     pub fn donate_atoms(&mut self, atoms: u64) -> LendingResult<()> {
         if self.total_shares.is_zero() {
-            return Err(LendingError::CantModifySharePriceIfZeroShares.into());
+            return Err(LendingError::CantModifySharePriceIfZeroShares.into()).with_msg("donate");
         }
         let additional_atoms_per_share =
             UFixedPoint::from_u64(atoms).safe_div(self.total_shares)?;
@@ -158,7 +158,8 @@ impl SharesTracker {
 
     pub fn socialize_loss_atoms(&mut self, atoms: u64) -> LendingResult<()> {
         if self.total_shares.is_zero() {
-            return Err(LendingError::CantModifySharePriceIfZeroShares.into());
+            return Err(LendingError::CantModifySharePriceIfZeroShares.into())
+                .with_msg("socialize_loss");
         }
         let atoms_per_share = UFixedPoint::from_u64(atoms).safe_div(self.total_shares)?;
         self.atoms_per_share = self.atoms_per_share.safe_sub(atoms_per_share)?;

@@ -3,7 +3,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::{
     constant::MAX_EXPONENT_ABS,
-    error::LendingError,
+    error::{LendingError, LendingResultExt},
     math::safe_math::SafeMath,
     oracle::{oracle_config::OracleConfig, pod_oracle_provider::PodOracleProvider},
     padding::Padding,
@@ -43,7 +43,7 @@ impl CollateralVault {
         oracle_config: OracleConfig,
     ) -> LendingResult {
         if mint_decimals as i64 > MAX_EXPONENT_ABS {
-            return Err(LendingError::UnsupportedMintDecimals.into());
+            return Err(LendingError::UnsupportedMintDecimals.into()).with_msg("collateral vault");
         }
         self.mint = mint;
         self.mint_decimals = mint_decimals;

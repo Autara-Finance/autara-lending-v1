@@ -3,7 +3,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use bytemuck::{Pod, Zeroable};
 
 use crate::{
-    error::{LendingError, LendingResult},
+    error::{LendingError, LendingResult, LendingResultExt},
     math::{
         bps::{bps_to_fixed_point, percent_to_bps},
         ifixed_point::IFixedPoint,
@@ -150,17 +150,20 @@ impl MarketConfig {
     pub fn update_ltv(&mut self, ltv_config: &LtvConfig) -> LendingResult {
         // cant reduce the unhealthy ltv, it could make some positions immediately unhealthy
         if self.ltv_config.unhealthy_ltv > ltv_config.unhealthy_ltv {
-            return Err(LendingError::InvalidLtvConfig.into());
+            return Err(LendingError::InvalidLtvConfig.into())
+                .with_msg("cannot reduce unhealthy ltv");
         }
         // cant have max ltv greater than unhealthy ltv
         if ltv_config.max_ltv >= ltv_config.unhealthy_ltv {
-            return Err(LendingError::InvalidLtvConfig.into());
+            return Err(LendingError::InvalidLtvConfig.into())
+                .with_msg("max ltv must be less than unhealthy ltv");
         }
         // cant have liquidation bonus greater than 10% or lower than 0.5%
         if ltv_config.liquidation_bonus > MAX_LIQUIDATION_BONUS
             || ltv_config.liquidation_bonus < MIN_LIQUIDATION_BONUS
         {
-            return Err(LendingError::InvalidLtvConfig.into());
+            return Err(LendingError::InvalidLtvConfig.into())
+                .with_msg("liquidation bonus out of range");
         }
         let one_plus_liquidation_bonus =
             IFixedPoint::one().safe_add(ltv_config.liquidation_bonus)?;
@@ -169,7 +172,8 @@ impl MarketConfig {
             .safe_mul(one_plus_liquidation_bonus)?;
         // we must ensure that there is enough margin for liquidation bonus
         if unhealthy_ltv_with_liquidation_bonus > MAX_LTV_WITH_LIQUIDATION_BONUS {
-            return Err(LendingError::InvalidLtvConfig.into());
+            return Err(LendingError::InvalidLtvConfig.into())
+                .with_msg("insufficient margin for liquidation bonus");
         }
         self.ltv_config = *ltv_config;
         Ok(())

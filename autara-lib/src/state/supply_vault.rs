@@ -65,7 +65,7 @@ impl SupplyVault {
         timestamp: i64,
     ) -> LendingResult {
         if mint_decimals as i64 > MAX_EXPONENT_ABS {
-            return Err(LendingError::UnsupportedMintDecimals.into());
+            return Err(LendingError::UnsupportedMintDecimals.into()).with_msg("supply vault");
         }
         if !interest_rate.is_valid() {
             return Err(LendingError::InvalidCurve.into());

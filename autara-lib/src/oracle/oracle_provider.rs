@@ -4,7 +4,7 @@ use arch_program::{account::AccountInfo, pubkey::Pubkey};
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::{
-    error::{LendingError, LendingResult},
+    error::{LendingError, LendingResult, LendingResultExt},
     oracle::{
         chaos::{ChaosProvider, PRICE_CONFIG_SEED},
         oracle_config::OracleValidationConfig,
@@ -51,8 +51,11 @@ impl UncheckedOracleRate {
         config: &OracleValidationConfig,
         unix_timestamp: i64,
     ) -> LendingResult<OracleRate> {
-        if self.rate.rate().is_negative() || self.rate.confidence().is_negative() {
-            return Err(LendingError::NegativeOracleRate.into());
+        if self.rate.rate().is_negative() {
+            return Err(LendingError::NegativeOracleRate.into()).with_msg("rate is negative");
+        }
+        if self.rate.confidence().is_negative() {
+            return Err(LendingError::NegativeOracleRate.into()).with_msg("confidence is negative");
         }
         if self.rate.rate().is_zero() {
             return Err(LendingError::OracleRateIsNull.into());
