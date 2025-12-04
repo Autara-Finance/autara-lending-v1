@@ -1,3 +1,4 @@
+pub mod chaos;
 pub mod oracle_config;
 pub mod oracle_price;
 pub mod oracle_provider;

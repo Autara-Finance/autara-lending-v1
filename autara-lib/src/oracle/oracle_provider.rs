@@ -5,7 +5,12 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::{
     error::{LendingError, LendingResult},
-    oracle::{oracle_config::OracleValidationConfig, oracle_price::OracleRate, pyth::PythProvider},
+    oracle::{
+        chaos::{ChaosProvider, PRICE_CONFIG_SEED},
+        oracle_config::OracleValidationConfig,
+        oracle_price::OracleRate,
+        pyth::PythProvider,
+    },
 };
 
 #[repr(C)]
@@ -17,6 +22,7 @@ use crate::{
 )]
 pub enum OracleProvider {
     Pyth(PythProvider),
+    Chaos(ChaosProvider),
 }
 
 #[repr(C)]
@@ -48,6 +54,9 @@ impl UncheckedOracleRate {
         if self.rate.rate().is_negative() || self.rate.confidence().is_negative() {
             return Err(LendingError::NegativeOracleRate.into());
         }
+        if self.rate.rate().is_zero() {
+            return Err(LendingError::OracleRateIsNull.into());
+        }
         let age = unix_timestamp
             .checked_sub(self.publish_time)
             .ok_or(LendingError::SubtractionOverflow)?
@@ -77,20 +86,29 @@ impl OracleProvider {
     pub fn as_ref<'a>(&'a self) -> OracleProviderRef<'a> {
         match self {
             OracleProvider::Pyth(provider) => OracleProviderRef::Pyth(provider),
+            OracleProvider::Chaos(provider) => OracleProviderRef::Chaos(provider),
         }
     }
 }
 
 pub enum OracleProviderRef<'a> {
     Pyth(&'a PythProvider),
+    Chaos(&'a ChaosProvider),
 }
 
 impl<'a> OracleProviderRef<'a> {
-    pub fn autara_pyth_pubkey(&self) -> Option<Pubkey> {
+    pub fn oracle_feed_pubkey(&self) -> Option<Pubkey> {
         match self {
             OracleProviderRef::Pyth(provider) => {
                 Some(Pubkey::find_program_address(&[&provider.feed_id], &provider.program_id).0)
             }
+            OracleProviderRef::Chaos(provider) => Some(
+                Pubkey::find_program_address(
+                    &[PRICE_CONFIG_SEED.as_bytes(), &provider.feed_id],
+                    &provider.program_id,
+                )
+                .0,
+            ),
         }
     }
 }
@@ -102,6 +120,7 @@ impl<'a> OracleLoader for OracleProviderRef<'a> {
     ) -> LendingResult<UncheckedOracleRate> {
         match self {
             OracleProviderRef::Pyth(pyth_provider) => pyth_provider.load_oracle_price(view),
+            OracleProviderRef::Chaos(chaos_provider) => chaos_provider.load_oracle_price(view),
         }
     }
 }

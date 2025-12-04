@@ -3,7 +3,7 @@ use std::{i128, ops::Neg};
 use fixed::types::I80F48;
 
 use crate::{
-    error::{ErrorWithStack, LendingError, LendingResult},
+    error::{ErrorWithContext, LendingError, LendingResult},
     map_context,
     math::ufixed_point::UFixedPoint,
     with_context,
@@ -89,7 +89,7 @@ impl Neg for IFixedPoint {
 }
 
 impl TryFrom<UFixedPoint> for IFixedPoint {
-    type Error = ErrorWithStack<LendingError>;
+    type Error = ErrorWithContext<LendingError>;
 
     #[track_caller]
     fn try_from(value: UFixedPoint) -> Result<Self, Self::Error> {

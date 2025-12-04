@@ -2,7 +2,7 @@ use arch_program::pubkey::Pubkey;
 use bytemuck::{Pod, Zeroable};
 
 use crate::{
-    constant::MAX_EXPONENT,
+    constant::MAX_EXPONENT_ABS,
     error::LendingError,
     math::safe_math::SafeMath,
     oracle::{oracle_config::OracleConfig, pod_oracle_provider::PodOracleProvider},
@@ -11,7 +11,7 @@ use crate::{
 
 use super::super::error::LendingResult;
 
-crate::validate_struct!(CollateralVault, 528);
+crate::validate_struct!(CollateralVault, 536);
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -42,7 +42,7 @@ impl CollateralVault {
         vault: Pubkey,
         oracle_config: OracleConfig,
     ) -> LendingResult {
-        if mint_decimals as i64 > MAX_EXPONENT {
+        if mint_decimals as i64 > MAX_EXPONENT_ABS {
             return Err(LendingError::UnsupportedMintDecimals.into());
         }
         self.mint = mint;

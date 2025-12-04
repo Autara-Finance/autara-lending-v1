@@ -3,7 +3,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use bytemuck::{Pod, Zeroable};
 
 use crate::{
-    error::{LendingError, StackTrace},
+    error::{LendingError, LendingResultExt},
     math::{ifixed_point::IFixedPoint, safe_math::SafeMath, ufixed_point::UFixedPoint},
     operation::liquidation::LiquidationResultWithBonus,
     padding::Padding,

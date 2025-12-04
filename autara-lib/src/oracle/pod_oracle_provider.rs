@@ -5,6 +5,7 @@ use crate::{
     error::LendingResult,
     math::const_max::const_max_usizes,
     oracle::{
+        chaos::ChaosProvider,
         oracle_provider::{
             AccountView, OracleLoader, OracleProvider, OracleProviderRef, UncheckedOracleRate,
         },
@@ -17,21 +18,26 @@ use crate::{
 #[borsh(use_discriminant = true)]
 pub enum PodOracleProviderKind {
     Pyth = 0,
+    Chaos = 1,
 }
 
 impl PodOracleProviderKind {
     const fn size(&self) -> usize {
         match self {
             PodOracleProviderKind::Pyth => std::mem::size_of::<PythProvider>(),
+            PodOracleProviderKind::Chaos => std::mem::size_of::<ChaosProvider>(),
         }
     }
 }
 
 unsafe impl Pod for PodOracleProviderKind {}
 
-const POD_UNION_SIZE: usize = const_max_usizes(&[PodOracleProviderKind::Pyth.size()]);
+const POD_UNION_SIZE: usize = const_max_usizes(&[
+    PodOracleProviderKind::Pyth.size(),
+    PodOracleProviderKind::Chaos.size(),
+]);
 
-crate::validate_struct!(PodOracleProvider, 72);
+crate::validate_struct!(PodOracleProvider, 80);
 
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Pod, Zeroable, BorshSerialize, BorshDeserialize)]
@@ -52,6 +58,14 @@ impl PodOracleProvider {
                     union,
                 }
             }
+            OracleProvider::Chaos(chaos_provider) => {
+                union[..PodOracleProviderKind::Chaos.size()]
+                    .copy_from_slice(bytemuck::bytes_of(&chaos_provider));
+                PodOracleProvider {
+                    kind: PodOracleProviderKind::Chaos,
+                    union,
+                }
+            }
         }
     }
 
@@ -60,6 +74,9 @@ impl PodOracleProvider {
             PodOracleProviderKind::Pyth => OracleProvider::Pyth(*bytemuck::from_bytes(
                 &self.union[..PodOracleProviderKind::Pyth.size()],
             )),
+            PodOracleProviderKind::Chaos => OracleProvider::Chaos(*bytemuck::from_bytes(
+                &self.union[..PodOracleProviderKind::Chaos.size()],
+            )),
         }
     }
 
@@ -67,6 +84,9 @@ impl PodOracleProvider {
         match self.kind {
             PodOracleProviderKind::Pyth => OracleProviderRef::Pyth(bytemuck::from_bytes(
                 &self.union[..PodOracleProviderKind::Pyth.size()],
+            )),
+            PodOracleProviderKind::Chaos => OracleProviderRef::Chaos(bytemuck::from_bytes(
+                &self.union[..PodOracleProviderKind::Chaos.size()],
             )),
         }
     }

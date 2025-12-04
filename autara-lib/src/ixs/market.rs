@@ -110,7 +110,7 @@ pub fn update_config_ix(
         oracle
             .oracle_provider()
             .oracle_provider_ref()
-            .autara_pyth_pubkey()
+            .oracle_feed_pubkey()
             .unwrap()
     } else {
         supply_oracle_key
@@ -119,7 +119,7 @@ pub fn update_config_ix(
         oracle
             .oracle_provider()
             .oracle_provider_ref()
-            .autara_pyth_pubkey()
+            .oracle_feed_pubkey()
             .unwrap()
     } else {
         collateral_oracle_key

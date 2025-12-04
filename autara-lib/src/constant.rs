@@ -5,7 +5,7 @@ pub const SECOND_PER_HOUR: u64 = 60 * 60;
 pub const SECONDS_PER_DAY: u64 = 24 * SECOND_PER_HOUR;
 pub const SECONDS_PER_YEAR: u64 = DAYS_PER_YEAR * SECONDS_PER_DAY;
 
-pub const MAX_EXPONENT: i64 = 18;
+pub const MAX_EXPONENT_ABS: i64 = 18;
 
 pub const POSITIVE_POWER_OF_TEN: [IFixedPoint; 19] = [
     IFixedPoint::from_i64(1),                   // 10 ^ 0

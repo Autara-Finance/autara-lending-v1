@@ -12,14 +12,14 @@ use crate::{
 };
 
 use super::{
-    super::error::{LendingError, LendingResult, StackTrace},
+    super::error::{LendingError, LendingResult, LendingResultExt},
     borrow_position::{BorrowPosition, BorrowPositionHealth},
     collateral_vault::CollateralVault,
     supply_position::SupplyPosition,
     supply_vault::SupplyVault,
 };
 
-crate::validate_struct!(Market, 1432);
+crate::validate_struct!(Market, 1448);
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -140,12 +140,12 @@ impl Market {
             self.supply_vault
                 .oracle_provider()
                 .oracle_provider_ref()
-                .autara_pyth_pubkey()
+                .oracle_feed_pubkey()
                 .unwrap(),
             self.collateral_vault
                 .oracle_provider()
                 .oracle_provider_ref()
-                .autara_pyth_pubkey()
+                .oracle_feed_pubkey()
                 .unwrap(),
         )
     }

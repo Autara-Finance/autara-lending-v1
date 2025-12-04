@@ -13,7 +13,7 @@ use crate::{
     pod_option::PodOption,
 };
 
-crate::validate_struct!(OracleConfig, 256);
+crate::validate_struct!(OracleConfig, 264);
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, BorshSerialize, BorshDeserialize, PartialEq, Eq)]

@@ -3,7 +3,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use bytemuck::{Pod, Zeroable};
 
 use crate::{
-    constant::MAX_EXPONENT,
+    constant::MAX_EXPONENT_ABS,
     error::{LendingError, LendingResult},
     oracle::{
         oracle_price::OracleRate,
@@ -36,11 +36,12 @@ impl OracleLoader for PythProvider {
         if pyth_price.pyth_price.id != self.feed_id {
             return Err(LendingError::InvalidOracleFeedId.into());
         }
-        if pyth_price.pyth_price.price.expo > 0 || pyth_price.pyth_price.price.expo < -MAX_EXPONENT
+        if pyth_price.pyth_price.price.expo > MAX_EXPONENT_ABS
+            || pyth_price.pyth_price.price.expo < -MAX_EXPONENT_ABS
         {
             return Err(LendingError::InvalidPythOracleAccount.into());
         }
-        let expo = (-pyth_price.pyth_price.price.expo) as u8;
+        let expo = pyth_price.pyth_price.price.expo as i8;
         Ok(UncheckedOracleRate::new(
             OracleRate::try_from_price_expo_conf(
                 pyth_price.pyth_price.price.price,
@@ -222,25 +223,6 @@ pub mod tests {
     }
 
     #[test]
-    fn test_load_oracle_price_positive_expo() {
-        let provider = create_pyth_provider();
-        let key = create_test_pubkey();
-        let owner = create_test_pubkey();
-
-        // Create price data with positive exponent (invalid)
-        let price_data = create_pyth_price_account(
-            create_test_feed_id(),
-            10000000000u64,
-            5000000u64,
-            5, // Positive exponent
-        );
-
-        let result = provider.load_oracle_price((&key, price_data, &owner).into());
-        assert!(result.is_err());
-        assert_eq!(*result.unwrap_err(), LendingError::InvalidPythOracleAccount);
-    }
-
-    #[test]
     fn test_load_oracle_price_expo_too_negative() {
         let provider = create_pyth_provider();
         let key = create_test_pubkey();
@@ -251,7 +233,7 @@ pub mod tests {
             create_test_feed_id(),
             10000000000u64,
             5000000u64,
-            -(MAX_EXPONENT + 1), // Too negative
+            -(MAX_EXPONENT_ABS + 1), // Too negative
         );
 
         let result = provider.load_oracle_price((&key, price_data, &owner).into());
@@ -269,7 +251,7 @@ pub mod tests {
             create_test_feed_id(),
             1000000000000000000u64,
             50000000000000000u64,
-            -MAX_EXPONENT,
+            -MAX_EXPONENT_ABS,
         );
 
         let result = provider.load_oracle_price((&key, price_data, &owner).into());

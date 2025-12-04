@@ -1,7 +1,7 @@
 use fixed::types::U64F64;
 
 use crate::{
-    error::{ErrorWithStack, LendingError},
+    error::{ErrorWithContext, LendingError},
     math::{ifixed_point::IFixedPoint, pod::PodU128},
     with_context,
 };
@@ -20,7 +20,7 @@ impl UFixedPoint {
 }
 
 impl TryFrom<IFixedPoint> for UFixedPoint {
-    type Error = ErrorWithStack<LendingError>;
+    type Error = ErrorWithContext<LendingError>;
 
     #[track_caller]
     fn try_from(value: IFixedPoint) -> Result<Self, Self::Error> {

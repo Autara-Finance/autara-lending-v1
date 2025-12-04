@@ -9,6 +9,7 @@ async fn can_deposit_collateral() {
 
     let deposit = 10000;
     let balance_before = fixture.fetch_user_balance().await;
+    dbg!(&balance_before);
     fixture
         .user_client()
         .deposit_collateral(&market, deposit)

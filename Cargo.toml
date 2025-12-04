@@ -13,10 +13,10 @@ autara-program-lib = { path = "autara-program-lib" }
 autara-oracle = { path = "programs/autara-oracle" }
 
 # Arch dependencies
-arch_sdk = { version = "0.5.14" }
-arch_program = { version = "0.5.14" }
-apl-token = { version = "0.5.14", features = ["no-entrypoint"] }
-apl-associated-token-account = { version = "0.5.14", features = ["no-entrypoint"] }
+arch_sdk = { version = "=0.5.14" }
+arch_program = { version = "=0.5.14" }
+apl-token = { version = "=0.5.14", features = ["no-entrypoint"] }
+apl-associated-token-account = { version = "=0.5.14", features = ["no-entrypoint"] }
 
 
 bitcoincore-rpc-async = { version = "3.0" }

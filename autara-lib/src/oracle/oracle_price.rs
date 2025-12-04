@@ -3,7 +3,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::{
     constant::POSITIVE_POWER_OF_TEN,
-    error::LendingResult,
+    error::{LendingError, LendingResult},
     math::{ifixed_point::IFixedPoint, safe_math::SafeMath},
 };
 
@@ -29,10 +29,18 @@ impl OracleRate {
         Self { rate, confidence }
     }
 
-    pub fn try_from_price_expo_conf(price: u64, confidence: u64, expo: u8) -> LendingResult<Self> {
-        let rate = IFixedPoint::from(price).safe_div(POSITIVE_POWER_OF_TEN[expo as usize])?;
-        let confidence =
-            IFixedPoint::from(confidence).safe_div(POSITIVE_POWER_OF_TEN[expo as usize])?;
+    pub fn try_from_price_expo_conf(price: u64, confidence: u64, expo: i8) -> LendingResult<Self> {
+        let expo_pow =
+            POSITIVE_POWER_OF_TEN[expo.checked_abs().ok_or(LendingError::CastOverflow)? as usize];
+        let scale = |fixed: IFixedPoint| {
+            if expo <= 0 {
+                fixed.safe_div(expo_pow)
+            } else {
+                fixed.safe_mul(expo_pow)
+            }
+        };
+        let rate = scale(IFixedPoint::from(price))?;
+        let confidence = scale(IFixedPoint::from(confidence))?;
         Ok(Self { rate, confidence })
     }
 

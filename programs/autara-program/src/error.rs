@@ -1,12 +1,12 @@
 use arch_program::program_error::ProgramError;
-use autara_lib::error::{ErrorWithStack, LendingError};
+use autara_lib::error::{ErrorWithContext, LendingError};
 use autara_program_lib::accounts::AccountValidationError;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 pub type LendingProgramResult<T = ()> = Result<T, LendingProgramError>;
 
 #[derive(Debug, Clone)]
-pub struct LendingProgramError(pub ErrorWithStack<LendingProgramErrorKind>);
+pub struct LendingProgramError(pub ErrorWithContext<LendingProgramErrorKind>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LendingProgramErrorKind {
@@ -107,12 +107,12 @@ impl From<LendingAccountValidationError> for LendingProgramErrorKind {
     }
 }
 
-impl<T> From<ErrorWithStack<T>> for LendingProgramError
+impl<T> From<ErrorWithContext<T>> for LendingProgramError
 where
     LendingProgramErrorKind: From<T>,
 {
-    fn from(err: ErrorWithStack<T>) -> Self {
-        LendingProgramError(ErrorWithStack {
+    fn from(err: ErrorWithContext<T>) -> Self {
+        LendingProgramError(ErrorWithContext {
             error: LendingProgramErrorKind::from(err.error),
             stack: err.stack,
         })
@@ -125,7 +125,7 @@ where
 {
     #[track_caller]
     fn from(err: T) -> Self {
-        LendingProgramError(ErrorWithStack::new(
+        LendingProgramError(ErrorWithContext::new(
             LendingProgramErrorKind::from(err),
             std::panic::Location::caller(),
         ))

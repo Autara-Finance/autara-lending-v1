@@ -3,8 +3,8 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use bytemuck::{Pod, Zeroable};
 
 use crate::{
-    constant::MAX_EXPONENT,
-    error::{LendingError, LendingResult, StackTrace},
+    constant::MAX_EXPONENT_ABS,
+    error::{LendingError, LendingResult, LendingResultExt},
     interest_rate::{
         interest_rate_kind::InterestRateCurveKind,
         interest_rate_per_second::InterestRatePerSecond,
@@ -19,7 +19,7 @@ use crate::{
     padding::Padding,
 };
 
-crate::validate_struct!(SupplyVault, 712);
+crate::validate_struct!(SupplyVault, 720);
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -64,7 +64,7 @@ impl SupplyVault {
         interest_rate: InterestRateCurveKind,
         timestamp: i64,
     ) -> LendingResult {
-        if mint_decimals as i64 > MAX_EXPONENT {
+        if mint_decimals as i64 > MAX_EXPONENT_ABS {
             return Err(LendingError::UnsupportedMintDecimals.into());
         }
         if !interest_rate.is_valid() {
