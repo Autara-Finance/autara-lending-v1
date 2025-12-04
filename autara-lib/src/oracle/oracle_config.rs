@@ -2,7 +2,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use bytemuck::{Pod, Zeroable};
 
 use crate::{
-    error::LendingResult,
+    error::{LendingError, LendingResult, LendingResultExt},
     math::ifixed_point::IFixedPoint,
     oracle::{
         oracle_price::OracleRate,
@@ -27,7 +27,7 @@ pub struct OracleConfig {
     oracle_provider: PodOracleProvider,
     /// Config to sanitize oracle feed
     validation_config: OracleValidationConfig,
-    pad: Padding<152>,
+    pad: Padding<160>,
 }
 
 impl OracleConfig {
@@ -42,6 +42,19 @@ impl OracleConfig {
         }
     }
 
+    pub fn validate(&self) -> LendingResult<()> {
+        match self.oracle_provider.oracle_provider_ref() {
+            super::oracle_provider::OracleProviderRef::Chaos(chaos_provider) => {
+                if chaos_provider.required_signatures == 0 {
+                    return Err(LendingError::InvalidOracleConfig.into())
+                        .with_msg("required_signatures must be greater than 0");
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     pub fn new_pyth(feed_id: [u8; 32], program_id: arch_program::pubkey::Pubkey) -> Self {
         Self {
             oracle_provider: PodOracleProvider::from_oracle_provider(
@@ -49,6 +62,27 @@ impl OracleConfig {
                     crate::oracle::pyth::PythProvider {
                         feed_id,
                         program_id,
+                    },
+                ),
+            ),
+            validation_config: OracleValidationConfig::default(),
+            pad: Padding::default(),
+        }
+    }
+
+    pub fn new_chaos(
+        feed_id: [u8; 32],
+        program_id: arch_program::pubkey::Pubkey,
+        required_signatures: u8,
+    ) -> Self {
+        Self {
+            oracle_provider: PodOracleProvider::from_oracle_provider(
+                crate::oracle::oracle_provider::OracleProvider::Chaos(
+                    crate::oracle::chaos::ChaosProvider {
+                        feed_id,
+                        program_id,
+                        required_signatures,
+                        pad: Padding::default(),
                     },
                 ),
             ),
@@ -84,16 +118,13 @@ pub struct OracleValidationConfig {
     /// Level from which relative confidence should stay under.
     /// Ex: If price is 150 +/- 1.6, relative confidence is 1.6/150 ~ 1.06%
     min_relative_confidence: PodOption<IFixedPoint>,
-    /// Minimum number of signatures required for an oracle rate to be considered valid.
-    min_signature_threshold: PodOption<u64>,
 }
 
 impl Default for OracleValidationConfig {
     fn default() -> Self {
         Self {
-            max_age: PodOption::new(60 * 60),
+            max_age: PodOption::new(60),
             min_relative_confidence: PodOption::new(IFixedPoint::lit("0.05")),
-            min_signature_threshold: PodOption::new(0),
         }
     }
 }
@@ -103,7 +134,6 @@ impl OracleValidationConfig {
         Self {
             max_age: PodOption::new(max_age),
             min_relative_confidence: PodOption::new(min_relative_confidence),
-            min_signature_threshold: PodOption::new(0),
         }
     }
 

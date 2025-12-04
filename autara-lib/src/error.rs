@@ -95,6 +95,7 @@ pub enum LendingError {
     NegativeInterestRate,
     CannotSocializeDebtForHealthyPosition,
     UnsupportedMintDecimals,
+    InvalidOracleConfig,
 }
 
 impl LendingError {

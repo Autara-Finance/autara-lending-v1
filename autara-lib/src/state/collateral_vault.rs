@@ -45,6 +45,7 @@ impl CollateralVault {
         if mint_decimals as i64 > MAX_EXPONENT_ABS {
             return Err(LendingError::UnsupportedMintDecimals.into()).with_msg("collateral vault");
         }
+        oracle_config.validate()?;
         self.mint = mint;
         self.mint_decimals = mint_decimals;
         self.vault = vault;

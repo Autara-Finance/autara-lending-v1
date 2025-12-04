@@ -70,6 +70,7 @@ impl SupplyVault {
         if !interest_rate.is_valid() {
             return Err(LendingError::InvalidCurve.into());
         }
+        oracle_config.validate()?;
         self.mint = mint;
         self.mint_decimals = mint_decimals;
         self.vault = vault;
