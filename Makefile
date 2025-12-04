@@ -1,7 +1,7 @@
 program-build:
 	cargo-build-sbf --features entrypoint
 
-program-test: program-build
+program-test:
 	cargo nextest run --no-fail-fast -j 24
 
 deploy: program-build
