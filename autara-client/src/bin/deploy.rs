@@ -6,7 +6,14 @@ use autara_client::{
 };
 
 fn main() -> anyhow::Result<()> {
-    let config = Config::localnet();
+    let config = Config {
+        node_endpoint: "".into(),
+        node_username: "".into(),
+        node_password: "".into(),
+        network: arch_sdk::arch_program::bitcoin::Network::Testnet4,
+        arch_node_url: "https://rpc.testnet.arch.network".into(),
+        titan_url: "".into(),
+    };
     deploy_new_autara_pyth(&config);
     deploy_new_autara(&config);
     tokio::runtime::Builder::new_current_thread()

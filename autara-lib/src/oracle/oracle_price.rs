@@ -116,4 +116,107 @@ pub mod tests {
         let atoms = oracle.collateral_atoms(borrow_value, 9).unwrap();
         assert_eq!(atoms, 10 * 10u64.pow(9));
     }
+
+    #[test]
+    fn lower_bound_less_than_upper_bound() {
+        let oracle = OracleRate::new(IFixedPoint::lit("100"), IFixedPoint::lit("5"));
+        let lower = oracle.lower_bound_rate().unwrap();
+        let upper = oracle.upper_bound_rate().unwrap();
+        assert!(lower < upper);
+        assert_eq!(lower, IFixedPoint::lit("95"));
+        assert_eq!(upper, IFixedPoint::lit("105"));
+    }
+
+    #[test]
+    fn collateral_value_uses_lower_bound() {
+        let oracle = OracleRate::new(IFixedPoint::lit("100"), IFixedPoint::lit("10"));
+        let amount = 1_000_000_000u64;
+        let value = oracle.collateral_value(amount, 9).unwrap();
+        let expected = oracle
+            .lower_bound_rate()
+            .unwrap()
+            .safe_mul(amount)
+            .unwrap()
+            .safe_div(IFixedPoint::from(1_000_000_000u64))
+            .unwrap();
+        assert_eq!(value, expected);
+    }
+
+    #[test]
+    fn borrow_value_uses_upper_bound() {
+        let oracle = OracleRate::new(IFixedPoint::lit("100"), IFixedPoint::lit("10"));
+        let amount = 1_000_000_000u64;
+        let value = oracle.borrow_value(amount, 9).unwrap();
+        let expected = oracle
+            .upper_bound_rate()
+            .unwrap()
+            .safe_mul(amount)
+            .unwrap()
+            .safe_div(IFixedPoint::from(1_000_000_000u64))
+            .unwrap();
+        assert_eq!(value, expected);
+    }
+
+    #[test]
+    fn borrow_value_greater_than_collateral_value() {
+        let oracle = OracleRate::new(IFixedPoint::lit("100"), IFixedPoint::lit("5"));
+        let amount = 1_000_000_000u64;
+        let borrow = oracle.borrow_value(amount, 9).unwrap();
+        let collateral = oracle.collateral_value(amount, 9).unwrap();
+        assert!(borrow > collateral);
+    }
+
+    #[test]
+    fn value_atoms_roundtrip_borrow() {
+        let oracle = OracleRate::new(IFixedPoint::lit("100"), IFixedPoint::lit("1"));
+        let atoms = 1_000_000_000u64;
+        let value = oracle.borrow_value(atoms, 9).unwrap();
+        let recovered_atoms = oracle.borrow_atoms(value, 9).unwrap();
+        assert_eq!(recovered_atoms.as_u64_rounded_down().unwrap(), atoms);
+    }
+
+    #[test]
+    fn value_atoms_roundtrip_collateral() {
+        let oracle = OracleRate::new(IFixedPoint::lit("100"), IFixedPoint::lit("1"));
+        let atoms = 1_000_000_000u64;
+        let value = oracle.collateral_value(atoms, 9).unwrap();
+        let recovered_atoms = oracle.collateral_atoms(value, 9).unwrap();
+        assert_eq!(recovered_atoms.as_u64_rounded_down().unwrap(), atoms);
+    }
+
+    #[test]
+    fn relative_confidence_percentage() {
+        let oracle = OracleRate::new(IFixedPoint::lit("100"), IFixedPoint::lit("5"));
+        let rel_conf = oracle.relative_confidence().unwrap();
+        let expected = IFixedPoint::lit("0.05");
+        let diff = if rel_conf > expected {
+            rel_conf.safe_sub(expected).unwrap()
+        } else {
+            expected.safe_sub(rel_conf).unwrap()
+        };
+        assert!(diff < IFixedPoint::lit("0.0001"));
+    }
+
+    #[test]
+    fn zero_confidence_bounds_equal() {
+        let oracle = OracleRate::new(IFixedPoint::lit("100"), IFixedPoint::lit("0"));
+        let lower = oracle.lower_bound_rate().unwrap();
+        let upper = oracle.upper_bound_rate().unwrap();
+        assert_eq!(lower, upper);
+        assert_eq!(lower, oracle.rate());
+    }
+
+    #[test]
+    fn try_from_price_expo_positive() {
+        let oracle = OracleRate::try_from_price_expo_conf(100, 5, 2).unwrap();
+        assert_eq!(oracle.rate(), IFixedPoint::from(10000u64));
+        assert_eq!(oracle.confidence(), IFixedPoint::from(500u64));
+    }
+
+    #[test]
+    fn try_from_price_expo_negative() {
+        let oracle = OracleRate::try_from_price_expo_conf(100_000_000, 1_000_000, -6).unwrap();
+        assert_eq!(oracle.rate(), IFixedPoint::lit("100"));
+        assert_eq!(oracle.confidence(), IFixedPoint::lit("1"));
+    }
 }

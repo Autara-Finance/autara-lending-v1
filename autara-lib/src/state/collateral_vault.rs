@@ -118,4 +118,20 @@ pub mod tests {
             pad: Padding::default(),
         }
     }
+
+    #[test]
+    fn deposit_withdraw_roundtrip() {
+        let mut vault = create_btc_collateral_vault();
+        vault.deposit_collateral(BTC(5.)).unwrap();
+        vault.withdraw_collateral(BTC(5.)).unwrap();
+        assert_eq!(vault.total_collateral_atoms(), 0);
+    }
+
+    #[test]
+    fn cannot_withdraw_more_than_deposited() {
+        let mut vault = create_btc_collateral_vault();
+        vault.deposit_collateral(BTC(1.)).unwrap();
+        let result = vault.withdraw_collateral(BTC(2.));
+        assert!(result.is_err());
+    }
 }

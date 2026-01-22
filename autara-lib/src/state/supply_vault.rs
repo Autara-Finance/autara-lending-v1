@@ -464,4 +464,128 @@ pub mod tests {
             total_supply_after_donate - total_borrow_after_donate
         );
     }
+
+    #[test]
+    pub fn total_borrow_never_exceeds_total_supply_without_interest() {
+        let mut vault = create_usdc_supply_vault();
+        vault.lend(USDC(1_000_000.)).unwrap();
+        vault.borrow(USDC(500_000.)).unwrap();
+        assert!(vault.total_borrow().unwrap() <= vault.total_supply().unwrap());
+        vault.borrow(USDC(400_000.)).unwrap();
+        assert!(vault.total_borrow().unwrap() <= vault.total_supply().unwrap());
+    }
+
+    #[test]
+    pub fn utilisation_rate_between_zero_and_one() {
+        let mut vault = create_usdc_supply_vault();
+        vault.lend(USDC(1_000_000.)).unwrap();
+        let util_no_borrow = vault.utilisation_rate().unwrap();
+        assert!(util_no_borrow >= IFixedPoint::zero());
+        assert!(util_no_borrow <= IFixedPoint::one());
+        vault.borrow(USDC(500_000.)).unwrap();
+        let util_with_borrow = vault.utilisation_rate().unwrap();
+        assert!(util_with_borrow >= IFixedPoint::zero());
+        assert!(util_with_borrow <= IFixedPoint::one());
+    }
+
+    #[test]
+    pub fn interest_accrual_increases_borrow_debt() {
+        let mut vault = create_usdc_supply_vault();
+        vault.lend(USDC(1_000_000.)).unwrap();
+        vault.borrow(USDC(500_000.)).unwrap();
+        let borrow_before = vault.total_borrow().unwrap();
+        vault
+            .sync_clock(SECONDS_PER_YEAR as i64, UFixedPoint::zero(), 0)
+            .unwrap();
+        let borrow_after = vault.total_borrow().unwrap();
+        assert!(borrow_after > borrow_before);
+    }
+
+    #[test]
+    pub fn lend_withdraw_roundtrip_preserves_atoms() {
+        let mut vault = create_usdc_supply_vault();
+        let deposit = USDC(1_000_000.);
+        let shares = vault.lend(deposit).unwrap();
+        let withdrawn = vault.withdraw_shares(shares).unwrap();
+        assert_eq!(withdrawn, deposit);
+    }
+
+    #[test]
+    pub fn borrow_repay_roundtrip_preserves_atoms() {
+        let mut vault = create_usdc_supply_vault();
+        vault.lend(USDC(10_000_000.)).unwrap();
+        let borrow_amount = USDC(1_000_000.);
+        let shares = vault.borrow(borrow_amount).unwrap();
+        let repaid = vault.repay_shares(shares).unwrap();
+        assert_eq!(repaid, borrow_amount);
+    }
+
+    #[test]
+    pub fn fees_sum_equals_total_fee() {
+        let mut vault = create_usdc_supply_vault();
+        vault.lend(USDC(1_000_000.)).unwrap();
+        vault.borrow(USDC(500_000.)).unwrap();
+        let fee_bps = percent_to_bps(10);
+        let protocol_share_bps = percent_to_bps(50) as u16;
+        vault
+            .sync_clock(
+                SECONDS_PER_YEAR as i64,
+                bps_to_fixed_point(fee_bps),
+                protocol_share_bps,
+            )
+            .unwrap();
+        let protocol_fee = vault
+            .supply_shares_tracker
+            .shares_to_atoms(vault.pending_protocol_fee_shares, RoundingMode::RoundDown)
+            .unwrap();
+        let curator_fee = vault
+            .supply_shares_tracker
+            .shares_to_atoms(vault.pending_curator_fee_shares, RoundingMode::RoundDown)
+            .unwrap();
+        assert!(protocol_fee > 0);
+        assert!(curator_fee > 0);
+        let diff = if protocol_fee > curator_fee {
+            protocol_fee - curator_fee
+        } else {
+            curator_fee - protocol_fee
+        };
+        assert!(diff <= 1);
+    }
+
+    #[test]
+    pub fn socialize_loss_reduces_supply_by_debt() {
+        let mut vault = create_usdc_supply_vault();
+        vault.lend(USDC(1_000_000.)).unwrap();
+        vault.borrow(USDC(100_000.)).unwrap();
+        let supply_before = vault.total_supply().unwrap();
+        let debt = vault.total_borrow().unwrap();
+        let debt_shares = vault.borrow_shares_tracker().total_shares();
+        vault.socialize_loss(debt_shares).unwrap();
+        let supply_after = vault.total_supply().unwrap();
+        assert_eq!(supply_after, supply_before - debt);
+    }
+
+    #[test]
+    pub fn donate_does_not_change_borrow() {
+        let mut vault = create_usdc_supply_vault();
+        vault.lend(USDC(1_000_000.)).unwrap();
+        vault.borrow(USDC(500_000.)).unwrap();
+        let borrow_before = vault.total_borrow().unwrap();
+        vault.donate_supply(USDC(100_000.)).unwrap();
+        let borrow_after = vault.total_borrow().unwrap();
+        assert_eq!(borrow_before, borrow_after);
+    }
+
+    #[test]
+    pub fn sync_clock_monotonic_timestamp() {
+        let mut vault = create_usdc_supply_vault();
+        vault.lend(USDC(1_000_000.)).unwrap();
+        vault.borrow(USDC(500_000.)).unwrap();
+        vault.sync_clock(100, UFixedPoint::zero(), 0).unwrap();
+        assert_eq!(vault.last_update_unix_timestamp, 100);
+        vault.sync_clock(50, UFixedPoint::zero(), 0).unwrap();
+        assert_eq!(vault.last_update_unix_timestamp, 100);
+        vault.sync_clock(200, UFixedPoint::zero(), 0).unwrap();
+        assert_eq!(vault.last_update_unix_timestamp, 200);
+    }
 }

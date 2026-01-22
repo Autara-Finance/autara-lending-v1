@@ -326,4 +326,184 @@ pub mod tests {
             assert_eq!(big_withdrawn, big_deposit);
         }
     }
+
+    #[test]
+    pub fn multiple_deposits_accumulate_shares() {
+        let mut tracker = SharesTracker::new();
+        let shares1 = tracker.deposit_atoms(1000).unwrap();
+        let shares2 = tracker.deposit_atoms(2000).unwrap();
+        let shares3 = tracker.deposit_atoms(3000).unwrap();
+        let total_shares = shares1
+            .safe_add(shares2)
+            .unwrap()
+            .safe_add(shares3)
+            .unwrap();
+        assert_eq!(tracker.total_shares(), total_shares);
+        assert_eq!(tracker.total_atoms(RoundingMode::RoundDown).unwrap(), 6000);
+    }
+
+    #[test]
+    pub fn interest_compounds_atoms_per_share() {
+        let mut tracker = SharesTracker::new();
+        tracker.deposit_atoms(1_000_000).unwrap();
+        let atoms_per_share_before = tracker.atoms_per_share();
+        let interest_rate = InterestRate::new(IFixedPoint::lit("0.1"));
+        tracker.apply_interest_rate(interest_rate).unwrap();
+        let atoms_per_share_after = tracker.atoms_per_share();
+        assert!(atoms_per_share_after > atoms_per_share_before);
+    }
+
+    #[test]
+    pub fn second_depositor_gets_fewer_shares_after_interest() {
+        let mut tracker = SharesTracker::new();
+        let shares_first = tracker.deposit_atoms(1_000_000).unwrap();
+        let interest_rate = InterestRate::new(IFixedPoint::lit("0.5"));
+        tracker.apply_interest_rate(interest_rate).unwrap();
+        let shares_second = tracker.deposit_atoms(1_000_000).unwrap();
+        assert!(shares_first > shares_second);
+    }
+
+    #[test]
+    pub fn withdraw_atoms_capped_respects_max_shares() {
+        let mut tracker = SharesTracker::new();
+        let shares = tracker.deposit_atoms(1000).unwrap();
+        let max_shares = shares.safe_div(UFixedPoint::from_u64(2)).unwrap();
+        let (atoms, withdrawn_shares) = tracker
+            .withdraw_atoms_capped(1000, max_shares, RoundingMode::RoundDown)
+            .unwrap();
+        assert_eq!(withdrawn_shares, max_shares);
+        assert!(atoms <= 1000);
+    }
+
+    #[test]
+    pub fn withdraw_atoms_capped_uses_actual_shares_when_under_cap() {
+        let mut tracker = SharesTracker::new();
+        tracker.deposit_atoms(1000).unwrap();
+        let max_shares = UFixedPoint::from_u64(10000);
+        let (atoms, withdrawn_shares) = tracker
+            .withdraw_atoms_capped(500, max_shares, RoundingMode::RoundDown)
+            .unwrap();
+        assert_eq!(atoms, 500);
+        assert!(withdrawn_shares < max_shares);
+    }
+
+    #[test]
+    pub fn cant_socialize_more_than_total() {
+        let mut tracker = SharesTracker::new();
+        tracker.deposit_atoms(1000).unwrap();
+        let result = tracker.socialize_loss_atoms(2000);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    pub fn donate_increases_atoms_per_share() {
+        let mut tracker = SharesTracker::new();
+        tracker.deposit_atoms(1000).unwrap();
+        let atoms_per_share_before = tracker.atoms_per_share();
+        tracker.donate_atoms(500).unwrap();
+        let atoms_per_share_after = tracker.atoms_per_share();
+        assert!(atoms_per_share_after > atoms_per_share_before);
+    }
+
+    #[test]
+    pub fn socialize_loss_decreases_atoms_per_share() {
+        let mut tracker = SharesTracker::new();
+        tracker.deposit_atoms(1000).unwrap();
+        let atoms_per_share_before = tracker.atoms_per_share();
+        tracker.socialize_loss_atoms(200).unwrap();
+        let atoms_per_share_after = tracker.atoms_per_share();
+        assert!(atoms_per_share_after < atoms_per_share_before);
+    }
+
+    #[test]
+    pub fn cant_donate_to_empty_tracker() {
+        let mut tracker = SharesTracker::new();
+        let result = tracker.donate_atoms(500);
+        assert_eq!(
+            result.unwrap_err(),
+            LendingError::CantModifySharePriceIfZeroShares
+        );
+    }
+
+    #[test]
+    pub fn cant_socialize_loss_on_empty_tracker() {
+        let mut tracker = SharesTracker::new();
+        let result = tracker.socialize_loss_atoms(500);
+        assert_eq!(
+            result.unwrap_err(),
+            LendingError::CantModifySharePriceIfZeroShares
+        );
+    }
+
+    #[test]
+    pub fn rounding_modes_affect_withdrawal() {
+        let mut tracker = SharesTracker::new();
+        tracker.deposit_atoms(1000).unwrap();
+        let interest_rate = InterestRate::new(IFixedPoint::lit("0.333333"));
+        tracker.apply_interest_rate(interest_rate).unwrap();
+        let shares = tracker.atoms_to_shares(100).unwrap();
+        let atoms_round_down = tracker
+            .shares_to_atoms(shares, RoundingMode::RoundDown)
+            .unwrap();
+        let atoms_round_up = tracker
+            .shares_to_atoms(shares, RoundingMode::RoundUp)
+            .unwrap();
+        assert!(atoms_round_up >= atoms_round_down);
+    }
+
+    #[test]
+    pub fn initialize_resets_tracker() {
+        let mut tracker = SharesTracker::new();
+        tracker.deposit_atoms(1000).unwrap();
+        tracker.donate_atoms(500).unwrap();
+        tracker.initialize();
+        assert!(tracker.total_shares().is_zero());
+        assert_eq!(tracker.atoms_per_share(), UFixedPoint::from_u64(1));
+    }
+
+    #[test]
+    pub fn fee_shares_dilute_existing_holders() {
+        let mut tracker = SharesTracker::new();
+        let initial_shares = tracker.deposit_atoms(1_000_000).unwrap();
+        let interest_rate = InterestRate::new(IFixedPoint::lit("0.5"));
+        let fee_shares = tracker
+            .apply_interest_rate_with_fee(interest_rate, bps_to_fixed_point(1_000))
+            .unwrap();
+        assert!(!fee_shares.is_zero());
+        let total_shares = tracker.total_shares();
+        assert!(total_shares > initial_shares);
+    }
+
+    #[test]
+    pub fn proportional_shares_maintain_value_ratio() {
+        let mut tracker = SharesTracker::new();
+        let shares_a = tracker.deposit_atoms(1000).unwrap();
+        let shares_b = tracker.deposit_atoms(3000).unwrap();
+        let ratio = shares_b.safe_div(shares_a).unwrap();
+        assert_eq!(ratio.as_u64_rounded_down().unwrap(), 3);
+    }
+
+    #[test]
+    pub fn interest_rate_zero_no_change() {
+        let mut tracker = SharesTracker::new();
+        tracker.deposit_atoms(1_000_000).unwrap();
+        let atoms_before = tracker.total_atoms(RoundingMode::RoundDown).unwrap();
+        let interest_rate = InterestRate::new(IFixedPoint::zero());
+        tracker.apply_interest_rate(interest_rate).unwrap();
+        let atoms_after = tracker.total_atoms(RoundingMode::RoundDown).unwrap();
+        assert_eq!(atoms_before, atoms_after);
+    }
+
+    #[test]
+    pub fn sequential_interest_compounds() {
+        let mut tracker = SharesTracker::new();
+        tracker.deposit_atoms(1_000_000).unwrap();
+        let interest_rate = InterestRate::new(IFixedPoint::lit("0.1"));
+        tracker.apply_interest_rate(interest_rate).unwrap();
+        let atoms_after_first = tracker.total_atoms(RoundingMode::RoundDown).unwrap();
+        tracker.apply_interest_rate(interest_rate).unwrap();
+        let atoms_after_second = tracker.total_atoms(RoundingMode::RoundDown).unwrap();
+        assert!(atoms_after_second > atoms_after_first);
+        assert!(atoms_after_second > 1_200_000);
+    }
 }

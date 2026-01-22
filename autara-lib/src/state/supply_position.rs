@@ -95,3 +95,75 @@ impl SupplyPosition {
         self.shares = UFixedPoint::zero();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_position() -> SupplyPosition {
+        SupplyPosition::new(Pubkey::new_unique(), Pubkey::new_unique())
+    }
+
+    #[test]
+    fn lend_withdraw_roundtrip() {
+        let mut pos = create_position();
+        let atoms = 1_000_000u64;
+        let shares = UFixedPoint::from_u64(1_000_000);
+        pos.lend(atoms, shares).unwrap();
+        assert_eq!(pos.deposited_atoms(), atoms);
+        assert_eq!(pos.shares(), shares);
+        pos.withdraw(shares).unwrap();
+        assert_eq!(pos.deposited_atoms(), 0);
+        assert!(pos.shares().is_zero());
+    }
+
+    #[test]
+    fn cannot_withdraw_more_than_shares() {
+        let mut pos = create_position();
+        pos.lend(1000, UFixedPoint::from_u64(1000)).unwrap();
+        let result = pos.withdraw(UFixedPoint::from_u64(1001));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn partial_withdraw_reduces_proportionally() {
+        let mut pos = create_position();
+        pos.lend(1000, UFixedPoint::from_u64(1000)).unwrap();
+        // Withdraw half the shares
+        pos.withdraw(UFixedPoint::from_u64(500)).unwrap();
+        assert_eq!(pos.deposited_atoms(), 500);
+        assert_eq!(pos.shares(), UFixedPoint::from_u64(500));
+    }
+
+    #[test]
+    fn withdraw_all_clears_position() {
+        let mut pos = create_position();
+        pos.lend(1000, UFixedPoint::from_u64(1000)).unwrap();
+        pos.withdraw_all();
+        assert_eq!(pos.deposited_atoms(), 0);
+        assert!(pos.shares().is_zero());
+    }
+
+    #[test]
+    fn multiple_lends_accumulate() {
+        let mut pos = create_position();
+        pos.lend(100, UFixedPoint::from_u64(100)).unwrap();
+        pos.lend(200, UFixedPoint::from_u64(200)).unwrap();
+        pos.lend(300, UFixedPoint::from_u64(300)).unwrap();
+        assert_eq!(pos.deposited_atoms(), 600);
+        assert_eq!(pos.shares(), UFixedPoint::from_u64(600));
+    }
+
+    #[test]
+    fn initialize_resets_position() {
+        let mut pos = create_position();
+        pos.lend(1000, UFixedPoint::from_u64(1000)).unwrap();
+        let new_auth = Pubkey::new_unique();
+        let new_market = Pubkey::new_unique();
+        pos.initialize(new_auth, new_market);
+        assert_eq!(pos.deposited_atoms(), 0);
+        assert!(pos.shares().is_zero());
+        assert_eq!(pos.authority(), &new_auth);
+        assert_eq!(pos.market(), &new_market);
+    }
+}

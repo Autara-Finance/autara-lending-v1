@@ -3,6 +3,7 @@ use std::{collections::HashMap, ops::Deref};
 use anyhow::Context;
 use arch_sdk::{
     arch_program::pubkey::Pubkey, AccountFilter, AccountInfoWithPubkey, AsyncArchRpcClient,
+    WebSocketClient,
 };
 use autara_lib::{
     pda::{find_borrow_position_pda, find_global_config_pda, find_supply_position_pda},

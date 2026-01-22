@@ -553,4 +553,145 @@ pub mod tests {
         assert!(collateral_atoms > 0);
         assert!(repaid_atoms > 0);
     }
+
+    #[test]
+    pub fn borrow_near_max_ltv_then_price_drop_triggers_liquidation() {
+        let mut market = btc_usd_market();
+        let mut supply_position = SupplyPosition::zeroed();
+        let mut borrow_position = BorrowPosition::zeroed();
+        market.lend(&mut supply_position, USDC(1_000_000.)).unwrap();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(1.))
+            .unwrap();
+        // BTC lower_bound = 99,900, max_ltv = 80%, borrow 79k to stay under
+        market.borrow(&mut borrow_position, USDC(79_000.)).unwrap();
+        let health = market.borrow_position_health(&borrow_position).unwrap();
+        assert!(health.ltv < market.market().config().ltv_config().max_ltv);
+        // Price drop to 60k makes LTV = 79k/60k = 131% > unhealthy_ltv (90%)
+        market.collateral_oracle = OracleRate::new(60_000.into(), 0.into());
+        let health_after = market.borrow_position_health(&borrow_position).unwrap();
+        assert!(health_after.ltv > market.market().config().ltv_config().unhealthy_ltv);
+        market
+            .liquidate(&mut borrow_position, USDC(10_000.))
+            .unwrap();
+    }
+
+    #[test]
+    pub fn dust_amounts_dont_break_accounting() {
+        let mut market = btc_usd_market();
+        let mut supply_position = SupplyPosition::zeroed();
+        let mut borrow_position = BorrowPosition::zeroed();
+        // Supply 1 atom
+        market.lend(&mut supply_position, 10u64.pow(10)).unwrap();
+        market.lend(&mut supply_position, 1).unwrap();
+        assert_eq!(
+            market.market().supply_vault().total_supply().unwrap(),
+            10u64.pow(10) + 1
+        );
+        // Withdraw 1 atom
+        market.withdraw(&mut supply_position, 1).unwrap();
+        assert_eq!(
+            market.market().supply_vault().total_supply().unwrap(),
+            10u64.pow(10)
+        );
+        // Deposit 1 satoshi
+        market.deposit_collateral(&mut borrow_position, 1).unwrap();
+        assert_eq!(
+            market.market().collateral_vault().total_collateral_atoms(),
+            1
+        );
+    }
+
+    #[test]
+    pub fn interest_accrual_after_long_period() {
+        let mut market = btc_usd_market();
+        let mut supply_position = SupplyPosition::zeroed();
+        let mut borrow_position = BorrowPosition::zeroed();
+        market.lend(&mut supply_position, USDC(1_000_000.)).unwrap();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(10.))
+            .unwrap();
+        market.borrow(&mut borrow_position, USDC(100_000.)).unwrap();
+        let debt_before = market
+            .borrow_position_health(&borrow_position)
+            .unwrap()
+            .borrowed_atoms;
+        // 10 years of interest at 10% APY
+        market.sync_clock(10 * SECONDS_PER_YEAR as i64).unwrap();
+        let debt_after = market
+            .borrow_position_health(&borrow_position)
+            .unwrap()
+            .borrowed_atoms;
+        // After 10 years at 10% APY, debt should be ~2.59x original (1.1^10)
+        let ratio = debt_after as f64 / debt_before as f64;
+        assert!(ratio > 2.5 && ratio < 2.7);
+    }
+
+    #[test]
+    pub fn collateral_price_crash_to_near_zero() {
+        let mut market = btc_usd_market();
+        let mut supply_position = SupplyPosition::zeroed();
+        let mut borrow_position = BorrowPosition::zeroed();
+        market.lend(&mut supply_position, USDC(1_000_000.)).unwrap();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(1.))
+            .unwrap();
+        market.borrow(&mut borrow_position, USDC(50_000.)).unwrap();
+        // Price crashes to $1 (99.999% drop)
+        market.collateral_oracle = OracleRate::new(1.into(), 0.into());
+        // Position is deeply underwater, socialize the loss
+        // Returns (debt_atoms, collateral_atoms)
+        let (debt_atoms, collateral_atoms) = market.socialize_loss(&mut borrow_position).unwrap();
+        assert_eq!(collateral_atoms, BTC(1.));
+        assert!(debt_atoms >= USDC(50_000.)); // debt includes any accrued interest
+                                              // Supplier takes the loss
+        let withdrawn = market.withdraw_all(&mut supply_position).unwrap();
+        assert!(withdrawn < USDC(1_000_000.));
+    }
+
+    #[test]
+    pub fn multiple_borrowers_compete_for_liquidity() {
+        let mut market = btc_usd_market();
+        let mut supply = SupplyPosition::zeroed();
+        let mut borrow1 = BorrowPosition::zeroed();
+        let mut borrow2 = BorrowPosition::zeroed();
+        market.lend(&mut supply, USDC(100_000.)).unwrap();
+        market.deposit_collateral(&mut borrow1, BTC(1.)).unwrap();
+        market.deposit_collateral(&mut borrow2, BTC(1.)).unwrap();
+        // First borrower takes 50%
+        market.borrow(&mut borrow1, USDC(50_000.)).unwrap();
+        // Second borrower takes another 40%
+        market.borrow(&mut borrow2, USDC(40_000.)).unwrap();
+        // Utilization at 90%
+        let util = market
+            .market()
+            .supply_vault()
+            .utilisation_rate()
+            .unwrap()
+            .to_float();
+        assert!(util > 0.89 && util < 0.91);
+        // Third borrow of 15k should fail (exceeds available)
+        let result = market.borrow(&mut borrow1, USDC(15_000.));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    pub fn partial_liquidation_reduces_ltv() {
+        let mut market = btc_usd_market();
+        let mut supply = SupplyPosition::zeroed();
+        let mut borrow = BorrowPosition::zeroed();
+        market.lend(&mut supply, USDC(1_000_000.)).unwrap();
+        market.deposit_collateral(&mut borrow, BTC(1.)).unwrap();
+        market.borrow(&mut borrow, USDC(70_000.)).unwrap();
+        // Price drops significantly to trigger liquidation (70k / 75k = 93% > 90%)
+        market.collateral_oracle = OracleRate::new(75_000.into(), 0.into());
+        let health_before = market.borrow_position_health(&borrow).unwrap();
+        assert!(health_before.ltv > market.market().config().ltv_config().unhealthy_ltv);
+        // Partial liquidation
+        let result = market.liquidate(&mut borrow, USDC(10_000.)).unwrap();
+        assert!(result.liquidation_result_with_bonus.borrowed_atoms_to_repay > 0);
+        // Position should be healthier after
+        let health_after = market.borrow_position_health(&borrow).unwrap();
+        assert!(health_after.ltv < health_before.ltv);
+    }
 }

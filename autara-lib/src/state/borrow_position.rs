@@ -146,3 +146,115 @@ pub struct LiquidationResultWithCtx {
     pub health_before_liquidation: BorrowPositionHealth,
     pub health_after_liquidation: BorrowPositionHealth,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arch_program::pubkey::Pubkey;
+
+    fn create_position() -> BorrowPosition {
+        let mut pos = BorrowPosition::default();
+        pos.initialize(Pubkey::new_unique(), Pubkey::new_unique());
+        pos
+    }
+
+    #[test]
+    fn collateral_deposit_withdraw_roundtrip() {
+        let mut pos = create_position();
+        pos.deposit_collateral(1_000_000).unwrap();
+        pos.withdraw_collateral(1_000_000).unwrap();
+        assert_eq!(pos.collateral_deposited_atoms(), 0);
+    }
+
+    #[test]
+    fn collateral_never_negative() {
+        let mut pos = create_position();
+        pos.deposit_collateral(1000).unwrap();
+        let result = pos.withdraw_collateral(1001);
+        assert!(result.is_err());
+        assert_eq!(pos.collateral_deposited_atoms(), 1000);
+    }
+
+    #[test]
+    fn borrow_increases_shares_and_atoms() {
+        let mut pos = create_position();
+        let shares = UFixedPoint::from_u64(1000);
+        pos.borrow(1000, shares).unwrap();
+        assert_eq!(pos.initial_borrowed_atoms(), 1000);
+        assert_eq!(pos.borrowed_shares(), shares);
+    }
+
+    #[test]
+    fn repay_all_clears_position() {
+        let mut pos = create_position();
+        pos.borrow(1000, UFixedPoint::from_u64(1000)).unwrap();
+        pos.repay_all();
+        assert_eq!(pos.initial_borrowed_atoms(), 0);
+        assert!(pos.borrowed_shares().is_zero());
+    }
+
+    #[test]
+    fn cant_repay_more_than_borrowed() {
+        let mut pos = create_position();
+        pos.borrow(1000, UFixedPoint::from_u64(1000)).unwrap();
+        let result = pos.repay(UFixedPoint::from_u64(1001));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn partial_repay_reduces_proportionally() {
+        let mut pos = create_position();
+        let initial_atoms = 1000;
+        let initial_shares = UFixedPoint::from_u64(1000);
+        pos.borrow(initial_atoms, initial_shares).unwrap();
+        let half_shares = UFixedPoint::from_u64(500);
+        pos.repay(half_shares).unwrap();
+        assert!(pos.initial_borrowed_atoms() < initial_atoms);
+        assert!(pos.borrowed_shares() < initial_shares);
+    }
+
+    #[test]
+    fn liquidate_reduces_both_debt_and_collateral() {
+        let mut pos = create_position();
+        pos.deposit_collateral(10000).unwrap();
+        pos.borrow(5000, UFixedPoint::from_u64(5000)).unwrap();
+        let collateral_before = pos.collateral_deposited_atoms();
+        let shares_before = pos.borrowed_shares();
+        pos.liquidate(UFixedPoint::from_u64(1000), 2000).unwrap();
+        assert!(pos.collateral_deposited_atoms() < collateral_before);
+        assert!(pos.borrowed_shares() < shares_before);
+    }
+
+    #[test]
+    fn multiple_deposits_accumulate() {
+        let mut pos = create_position();
+        pos.deposit_collateral(1000).unwrap();
+        pos.deposit_collateral(2000).unwrap();
+        pos.deposit_collateral(3000).unwrap();
+        assert_eq!(pos.collateral_deposited_atoms(), 6000);
+    }
+
+    #[test]
+    fn multiple_borrows_accumulate() {
+        let mut pos = create_position();
+        pos.borrow(1000, UFixedPoint::from_u64(1000)).unwrap();
+        pos.borrow(2000, UFixedPoint::from_u64(2000)).unwrap();
+        assert_eq!(pos.initial_borrowed_atoms(), 3000);
+        assert_eq!(pos.borrowed_shares(), UFixedPoint::from_u64(3000));
+    }
+
+    #[test]
+    fn initialize_resets_all_fields() {
+        let mut pos = create_position();
+        pos.deposit_collateral(1000).unwrap();
+        pos.borrow(500, UFixedPoint::from_u64(500)).unwrap();
+        let new_auth = Pubkey::new_unique();
+        let new_market = Pubkey::new_unique();
+        pos.initialize(new_auth, new_market);
+        assert_eq!(pos.collateral_deposited_atoms(), 0);
+        assert_eq!(pos.initial_borrowed_atoms(), 0);
+        assert!(pos.borrowed_shares().is_zero());
+        assert_eq!(pos.authority(), &new_auth);
+        assert_eq!(pos.market(), &new_market);
+    }
+}

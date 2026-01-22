@@ -130,4 +130,35 @@ pub mod tests {
             .unwrap();
         assert_eq_float!(interest_rate_during_one_year.rate().to_float(), apy)
     }
+
+    #[test]
+    pub fn apr_apy_relationship() {
+        // APY > APR for same rate due to compounding
+        let apr = 0.10;
+        let rate_from_apr = InterestRatePerSecond::approximate_from_apr(apr);
+        let rate_from_apy = InterestRatePerSecond::approximate_from_apy(apr);
+        // For same nominal rate, APY-based rate should be lower (APY already accounts for compounding)
+        assert!(rate_from_apr > rate_from_apy);
+    }
+
+    #[test]
+    pub fn utilisation_rate_scales_interest() {
+        let rate = InterestRatePerSecond::approximate_from_apy(0.10);
+        let half_util = IFixedPoint::from_ratio(1, 2).unwrap();
+        let adjusted = rate.adjust_for_utilisation_rate(half_util).unwrap();
+        // Rate per second is halved at 50% utilization
+        assert!(*adjusted < *rate);
+        let full_util = IFixedPoint::one();
+        let adjusted_full = rate.adjust_for_utilisation_rate(full_util).unwrap();
+        assert_eq!(*adjusted_full, *rate);
+    }
+
+    #[test]
+    pub fn zero_elapsed_returns_zero_interest() {
+        let rate = InterestRatePerSecond::approximate_from_apy(0.10);
+        let interest = rate
+            .coumpounding_interest_rate_during_elapsed_seconds(0)
+            .unwrap();
+        assert!(interest.rate().is_zero());
+    }
 }

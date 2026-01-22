@@ -880,4 +880,488 @@ pub mod tests {
         let withdraw = market.withdraw_all(&mut lending).unwrap();
         assert_eq!(withdraw, USDC(1_100_000.) - 1); // rounding down error
     }
+
+    #[test]
+    pub fn ltv_is_zero_when_no_borrow() {
+        let market = create_btc_usdc_market();
+        let mut borrow_position = BorrowPosition::default();
+        borrow_position.deposit_collateral(BTC(1.)).unwrap();
+        let collateral_oracle = default_btc_oracle_rate();
+        let supply_oracle = default_usd_oracle_rate();
+        let health = market
+            .borrow_position_health(&borrow_position, &collateral_oracle, &supply_oracle)
+            .unwrap();
+        assert!(health.ltv.is_zero());
+        assert_eq!(health.borrowed_atoms, 0);
+        assert!(health.collateral_value > IFixedPoint::zero());
+    }
+
+    #[test]
+    pub fn cant_withdraw_all_collateral_with_active_borrow() {
+        let mut market = create_btc_usdc_market();
+        let mut borrow_position = BorrowPosition::default();
+        let collateral_oracle = default_btc_oracle_rate();
+        let supply_oracle = default_usd_oracle_rate();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(1.))
+            .unwrap();
+        market
+            .borrow(
+                &mut borrow_position,
+                USDC(1000.),
+                &supply_oracle,
+                &collateral_oracle,
+            )
+            .unwrap();
+        assert_eq!(
+            market
+                .withdraw_collateral(
+                    &mut borrow_position,
+                    BTC(1.),
+                    &collateral_oracle,
+                    &supply_oracle,
+                )
+                .err()
+                .unwrap(),
+            LendingError::MaxLtvReached
+        );
+    }
+
+    #[test]
+    pub fn can_withdraw_all_collateral_after_full_repay() {
+        let mut market = create_btc_usdc_market();
+        let mut borrow_position = BorrowPosition::default();
+        let collateral_oracle = default_btc_oracle_rate();
+        let supply_oracle = default_usd_oracle_rate();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(1.))
+            .unwrap();
+        market
+            .borrow(
+                &mut borrow_position,
+                USDC(1000.),
+                &supply_oracle,
+                &collateral_oracle,
+            )
+            .unwrap();
+        market.repay_all(&mut borrow_position).unwrap();
+        market
+            .withdraw_collateral(
+                &mut borrow_position,
+                BTC(1.),
+                &collateral_oracle,
+                &supply_oracle,
+            )
+            .unwrap();
+        assert_eq!(borrow_position.collateral_deposited_atoms(), 0);
+    }
+
+    #[test]
+    pub fn partial_repay_reduces_ltv() {
+        let mut market = create_btc_usdc_market();
+        let mut borrow_position = BorrowPosition::default();
+        let collateral_oracle = default_btc_oracle_rate();
+        let supply_oracle = default_usd_oracle_rate();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(1.))
+            .unwrap();
+        market
+            .borrow(
+                &mut borrow_position,
+                USDC(50_000.),
+                &supply_oracle,
+                &collateral_oracle,
+            )
+            .unwrap();
+        let ltv_before = market
+            .borrow_position_health(&borrow_position, &collateral_oracle, &supply_oracle)
+            .unwrap()
+            .ltv;
+        market.repay(&mut borrow_position, USDC(25_000.)).unwrap();
+        let ltv_after = market
+            .borrow_position_health(&borrow_position, &collateral_oracle, &supply_oracle)
+            .unwrap()
+            .ltv;
+        assert!(ltv_after < ltv_before);
+    }
+
+    #[test]
+    pub fn borrow_at_max_ltv_boundary() {
+        let mut market = create_btc_usdc_market();
+        let mut borrow_position = BorrowPosition::default();
+        let collateral_oracle = default_btc_oracle_rate();
+        let supply_oracle = default_usd_oracle_rate();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(1.))
+            .unwrap();
+        let max_ltv = market.config().ltv_config().max_ltv;
+        market
+            .borrow(
+                &mut borrow_position,
+                USDC(79_000.),
+                &supply_oracle,
+                &collateral_oracle,
+            )
+            .unwrap();
+        let health = market
+            .borrow_position_health(&borrow_position, &collateral_oracle, &supply_oracle)
+            .unwrap();
+        assert!(health.ltv <= max_ltv);
+        assert_eq!(
+            market
+                .borrow(
+                    &mut borrow_position,
+                    USDC(10_000.),
+                    &supply_oracle,
+                    &collateral_oracle,
+                )
+                .err()
+                .unwrap(),
+            LendingError::MaxLtvReached
+        );
+    }
+
+    #[test]
+    pub fn multiple_suppliers_get_proportional_shares() {
+        let mut market = create_empty_btc_usdc_market();
+        let mut supplier_one = SupplyPosition::default();
+        let mut supplier_two = SupplyPosition::default();
+        market.lend(&mut supplier_one, USDC(100_000.)).unwrap();
+        market.lend(&mut supplier_two, USDC(100_000.)).unwrap();
+        assert_eq!(supplier_one.shares(), supplier_two.shares());
+        let info_one = market.supply_position_info(&supplier_one).unwrap();
+        let info_two = market.supply_position_info(&supplier_two).unwrap();
+        assert_eq!(info_one, info_two);
+    }
+
+    #[test]
+    pub fn second_supplier_gets_fewer_shares_after_interest() {
+        let mut market = create_empty_btc_usdc_market();
+        let mut supplier_one = SupplyPosition::default();
+        let mut borrow_position = BorrowPosition::default();
+        let collateral_oracle = default_btc_oracle_rate();
+        let supply_oracle = default_usd_oracle_rate();
+        market.lend(&mut supplier_one, USDC(100_000.)).unwrap();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(10.))
+            .unwrap();
+        market
+            .borrow(
+                &mut borrow_position,
+                USDC(50_000.),
+                &supply_oracle,
+                &collateral_oracle,
+            )
+            .unwrap();
+        market.sync_clock(86400).unwrap();
+        let mut supplier_two = SupplyPosition::default();
+        market.lend(&mut supplier_two, USDC(100_000.)).unwrap();
+        assert!(supplier_one.shares() > supplier_two.shares());
+    }
+
+    #[test]
+    pub fn withdraw_fails_when_utilization_exceeds_100_percent() {
+        let mut market = create_empty_btc_usdc_market();
+        let mut supplier = SupplyPosition::default();
+        let mut borrow_position = BorrowPosition::default();
+        let collateral_oracle = default_btc_oracle_rate();
+        let supply_oracle = default_usd_oracle_rate();
+        market.lend(&mut supplier, USDC(100_000.)).unwrap();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(100.))
+            .unwrap();
+        market
+            .borrow(
+                &mut borrow_position,
+                USDC(89_000.),
+                &supply_oracle,
+                &collateral_oracle,
+            )
+            .unwrap();
+        assert_eq!(
+            market.withdraw(&mut supplier, USDC(50_000.)).err().unwrap(),
+            LendingError::WithdrawalExceedsReserves
+        );
+    }
+
+    #[test]
+    pub fn liquidation_reduces_ltv() {
+        let mut market = create_btc_usdc_market();
+        let mut borrow_position = BorrowPosition::default();
+        let collateral_oracle = default_btc_oracle_rate();
+        let supply_oracle = default_usd_oracle_rate();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(0.5))
+            .unwrap();
+        market
+            .borrow(
+                &mut borrow_position,
+                USDC(20_000.),
+                &supply_oracle,
+                &collateral_oracle,
+            )
+            .unwrap();
+        let supply_oracle =
+            OracleRate::new(IFixedPoint::from_num(2.3), IFixedPoint::from_num(0.001));
+        let health_before = market
+            .borrow_position_health(&borrow_position, &collateral_oracle, &supply_oracle)
+            .unwrap();
+        assert!(health_before.ltv > market.config().ltv_config().unhealthy_ltv);
+        let result = market
+            .liquidate(
+                &mut borrow_position,
+                &collateral_oracle,
+                &supply_oracle,
+                u64::MAX,
+            )
+            .unwrap();
+        assert!(result.health_after_liquidation.ltv < result.health_before_liquidation.ltv);
+    }
+
+    #[test]
+    pub fn cant_borrow_zero_with_zero_collateral() {
+        let mut market = create_btc_usdc_market();
+        let mut borrow_position = BorrowPosition::default();
+        let collateral_oracle = default_btc_oracle_rate();
+        let supply_oracle = default_usd_oracle_rate();
+        market
+            .borrow(&mut borrow_position, 0, &supply_oracle, &collateral_oracle)
+            .unwrap();
+        let health = market
+            .borrow_position_health(&borrow_position, &collateral_oracle, &supply_oracle)
+            .unwrap();
+        assert!(health.ltv.is_zero());
+    }
+
+    #[test]
+    pub fn socialize_loss_reduces_supplier_withdrawable_amount() {
+        let mut market = create_empty_btc_usdc_market();
+        let mut supplier = SupplyPosition::default();
+        let mut borrow_position = BorrowPosition::default();
+        let collateral_oracle = default_btc_oracle_rate();
+        let supply_oracle = default_usd_oracle_rate();
+        market.lend(&mut supplier, USDC(1_000_000.)).unwrap();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(0.5))
+            .unwrap();
+        market
+            .borrow(
+                &mut borrow_position,
+                USDC(20_000.),
+                &supply_oracle,
+                &collateral_oracle,
+            )
+            .unwrap();
+        let supply_oracle = OracleRate::new(IFixedPoint::from_num(3), IFixedPoint::from_num(0.001));
+        let withdrawable_before = market.supply_position_info(&supplier).unwrap();
+        market
+            .socialize_loss(&mut borrow_position, &collateral_oracle, &supply_oracle)
+            .unwrap();
+        let withdrawable_after = market.supply_position_info(&supplier).unwrap();
+        assert!(withdrawable_after < withdrawable_before);
+    }
+
+    #[test]
+    pub fn max_supply_limit_enforced() {
+        let mut market = create_empty_btc_usdc_market();
+        market.config_mut().update_max_supply_atoms(USDC(100_000.));
+        let mut supplier = SupplyPosition::default();
+        market.lend(&mut supplier, USDC(100_000.)).unwrap();
+        let mut supplier_two = SupplyPosition::default();
+        assert_eq!(
+            market.lend(&mut supplier_two, 1).err().unwrap(),
+            LendingError::MaxSupplyReached
+        );
+    }
+
+    #[test]
+    pub fn position_health_with_price_drop() {
+        let mut market = create_btc_usdc_market();
+        let mut borrow_position = BorrowPosition::default();
+        let collateral_oracle = default_btc_oracle_rate();
+        let supply_oracle = default_usd_oracle_rate();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(1.))
+            .unwrap();
+        market
+            .borrow(
+                &mut borrow_position,
+                USDC(50_000.),
+                &supply_oracle,
+                &collateral_oracle,
+            )
+            .unwrap();
+        let health_before = market
+            .borrow_position_health(&borrow_position, &collateral_oracle, &supply_oracle)
+            .unwrap();
+        let collateral_oracle_dropped =
+            OracleRate::new(IFixedPoint::from_num(50_000), IFixedPoint::from_num(100));
+        let health_after = market
+            .borrow_position_health(&borrow_position, &collateral_oracle_dropped, &supply_oracle)
+            .unwrap();
+        assert!(health_after.ltv > health_before.ltv);
+        assert!(health_after.collateral_value < health_before.collateral_value);
+    }
+
+    #[test]
+    pub fn liquidation_with_partial_max_repay() {
+        let mut market = create_btc_usdc_market();
+        let mut borrow_position = BorrowPosition::default();
+        let collateral_oracle = default_btc_oracle_rate();
+        let supply_oracle = default_usd_oracle_rate();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(0.5))
+            .unwrap();
+        market
+            .borrow(
+                &mut borrow_position,
+                USDC(20_000.),
+                &supply_oracle,
+                &collateral_oracle,
+            )
+            .unwrap();
+        let supply_oracle =
+            OracleRate::new(IFixedPoint::from_num(2.3), IFixedPoint::from_num(0.001));
+        let result = market
+            .liquidate(
+                &mut borrow_position,
+                &collateral_oracle,
+                &supply_oracle,
+                USDC(50.),
+            )
+            .unwrap();
+        assert_eq!(
+            result.liquidation_result_with_bonus.borrowed_atoms_to_repay,
+            USDC(50.)
+        );
+        assert!(!borrow_position.borrowed_shares().is_zero());
+    }
+
+    #[test]
+    pub fn donate_increases_supplier_value() {
+        let mut market = create_empty_btc_usdc_market();
+        let mut supplier = SupplyPosition::default();
+        market.lend(&mut supplier, USDC(100_000.)).unwrap();
+        let value_before = market.supply_position_info(&supplier).unwrap();
+        market.donate_supply_atoms(USDC(10_000.)).unwrap();
+        let value_after = market.supply_position_info(&supplier).unwrap();
+        assert!(value_after > value_before);
+        assert_eq!(value_after - value_before, USDC(10_000.) - 1);
+    }
+
+    #[test]
+    pub fn cant_donate_with_zero_suppliers() {
+        let mut market = create_empty_btc_usdc_market();
+        assert_eq!(
+            market.donate_supply_atoms(USDC(10_000.)).err().unwrap(),
+            LendingError::CantModifySharePriceIfZeroShares
+        );
+    }
+
+    #[test]
+    pub fn withdraw_all_returns_correct_amount() {
+        let mut market = create_empty_btc_usdc_market();
+        let mut supplier = SupplyPosition::default();
+        market.lend(&mut supplier, USDC(100_000.)).unwrap();
+        let withdrawn = market.withdraw_all(&mut supplier).unwrap();
+        assert_eq!(withdrawn, USDC(100_000.));
+        assert!(supplier.shares().is_zero());
+    }
+
+    #[test]
+    pub fn repay_all_clears_debt() {
+        let mut market = create_btc_usdc_market();
+        let mut borrow_position = BorrowPosition::default();
+        let collateral_oracle = default_btc_oracle_rate();
+        let supply_oracle = default_usd_oracle_rate();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(1.))
+            .unwrap();
+        market
+            .borrow(
+                &mut borrow_position,
+                USDC(50_000.),
+                &supply_oracle,
+                &collateral_oracle,
+            )
+            .unwrap();
+        assert!(!borrow_position.borrowed_shares().is_zero());
+        market.repay_all(&mut borrow_position).unwrap();
+        assert!(borrow_position.borrowed_shares().is_zero());
+        let health = market
+            .borrow_position_health(&borrow_position, &collateral_oracle, &supply_oracle)
+            .unwrap();
+        assert!(health.ltv.is_zero());
+    }
+
+    #[test]
+    pub fn interest_accrual_increases_debt() {
+        let mut market = create_btc_usdc_market();
+        let mut borrow_position = BorrowPosition::default();
+        let collateral_oracle = default_btc_oracle_rate();
+        let supply_oracle = default_usd_oracle_rate();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(10.))
+            .unwrap();
+        market
+            .borrow(
+                &mut borrow_position,
+                USDC(100_000.),
+                &supply_oracle,
+                &collateral_oracle,
+            )
+            .unwrap();
+        let health_before = market
+            .borrow_position_health(&borrow_position, &collateral_oracle, &supply_oracle)
+            .unwrap();
+        market.sync_clock(86400 * 365).unwrap();
+        let health_after = market
+            .borrow_position_health(&borrow_position, &collateral_oracle, &supply_oracle)
+            .unwrap();
+        assert!(health_after.borrowed_atoms > health_before.borrowed_atoms);
+        assert!(health_after.ltv > health_before.ltv);
+    }
+
+    #[test]
+    pub fn collateral_withdrawal_respects_max_ltv() {
+        let mut market = create_btc_usdc_market();
+        let mut borrow_position = BorrowPosition::default();
+        let collateral_oracle = default_btc_oracle_rate();
+        let supply_oracle = default_usd_oracle_rate();
+        market
+            .deposit_collateral(&mut borrow_position, BTC(1.))
+            .unwrap();
+        market
+            .borrow(
+                &mut borrow_position,
+                USDC(50_000.),
+                &supply_oracle,
+                &collateral_oracle,
+            )
+            .unwrap();
+        market
+            .withdraw_collateral(
+                &mut borrow_position,
+                BTC(0.1),
+                &collateral_oracle,
+                &supply_oracle,
+            )
+            .unwrap();
+        let health = market
+            .borrow_position_health(&borrow_position, &collateral_oracle, &supply_oracle)
+            .unwrap();
+        assert!(health.ltv <= market.config().ltv_config().max_ltv);
+        assert_eq!(
+            market
+                .withdraw_collateral(
+                    &mut borrow_position,
+                    BTC(0.5),
+                    &collateral_oracle,
+                    &supply_oracle,
+                )
+                .err()
+                .unwrap(),
+            LendingError::MaxLtvReached
+        );
+    }
 }
