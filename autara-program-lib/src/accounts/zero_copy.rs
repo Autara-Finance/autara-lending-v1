@@ -14,7 +14,7 @@ pub struct ZeroCopyOwnedAccount<'a, 'b, T: OwnedAccount + Pod + ZeroCopyInitiali
 }
 
 impl<'a, 'b, T: OwnedAccount + Pod + ZeroCopyInitialized> ZeroCopyOwnedAccount<'a, 'b, T> {
-    pub fn load_ref(&self) -> Ref<T> {
+    pub fn load_ref(&self) -> Ref<'_, T> {
         let ref_ = self.account.data.try_borrow().unwrap();
         Ref::map(ref_, |data| bytemuck::from_bytes::<T>(data))
     }
@@ -58,7 +58,7 @@ pub struct ZeroCopyOwnedAccountMut<'a, 'b, T: OwnedAccount + Pod + ZeroCopyIniti
 );
 
 impl<'a, 'b, T: OwnedAccount + Pod + ZeroCopyInitialized> ZeroCopyOwnedAccountMut<'a, 'b, T> {
-    pub fn load_mut(&self) -> RefMut<T> {
+    pub fn load_mut(&self) -> RefMut<'_, T> {
         let ref_ = self.0.account.data.try_borrow_mut().unwrap();
         RefMut::map(ref_, |data| bytemuck::from_bytes_mut::<T>(data))
     }

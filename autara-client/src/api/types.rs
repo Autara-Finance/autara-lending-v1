@@ -31,7 +31,7 @@ pub enum AutaraTransactionRequest {
 }
 
 impl AutaraTransactionRequest {
-    pub fn build_tx_tracing_params(&self) -> BuildTxTracingParams {
+    pub fn build_tx_tracing_params(&self) -> BuildTxTracingParams<'_> {
         match self {
             AutaraTransactionRequest::CreateMarket(params) => BuildTxTracingParams {
                 instruction: "CreateMarket",

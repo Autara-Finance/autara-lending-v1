@@ -22,11 +22,13 @@ pub const BITCOIN_NETWORK: bitcoin::Network = bitcoin::Network::Testnet;
 
 pub fn deploy_program(config: &Config, key: &str, path: &str) -> Pubkey {
     let (program_keypair, pubkey) = with_secret_key_file(&path_from_workspace(key)).unwrap();
-    let (authority_keypair, _, _) = generate_new_keypair(config.network);
+    let (authority_keypair, _authority_pk, _) = generate_new_keypair(config.network);
     let client = ArchRpcClient::new(config);
-    client
-        .create_and_fund_account_with_faucet(&authority_keypair)
-        .expect("create and fund account with faucet should not fail");
+    for _ in 0..2 {
+        client
+            .create_and_fund_account_with_faucet(&authority_keypair)
+            .expect("create and fund account with faucet should not fail");
+    }
     if let Err(err) = ProgramDeployer::new(config).try_deploy_program(
         path.to_string(),
         program_keypair,
@@ -87,9 +89,9 @@ impl AutaraTestEnv {
         let (user_keypair, user_one_pubkey, _) = generate_new_keypair(BITCOIN_NETWORK);
         let (user_two_keypair, user_two_pubkey, _) = generate_new_keypair(BITCOIN_NETWORK);
         tokio::try_join!(
-            arch_client.create_and_fund_account_with_faucet(&user_keypair, BITCOIN_NETWORK),
-            arch_client.create_and_fund_account_with_faucet(&user_two_keypair, BITCOIN_NETWORK),
-            arch_client.create_and_fund_account_with_faucet(&authority_keypair, BITCOIN_NETWORK)
+            arch_client.create_and_fund_account_with_faucet(&user_keypair),
+            arch_client.create_and_fund_account_with_faucet(&user_two_keypair),
+            arch_client.create_and_fund_account_with_faucet(&authority_keypair)
         )?;
         let amounts = [
             (user_one_pubkey, 1 << 55),
@@ -300,7 +302,7 @@ pub async fn create_mint_and_mint_custom_amounts(
     for (user, amount) in users_and_amounts {
         let create_user_ata = create_ata_ix(&payer, None, user, &mint_pubkey);
 
-        let user_ata = create_user_ata.accounts[1].pubkey;
+        let user_ata = get_associated_token_address(user, &mint_pubkey);
 
         instructions.push(create_user_ata);
 
@@ -313,6 +315,9 @@ pub async fn create_mint_and_mint_custom_amounts(
             *amount,
         )?);
     }
+
+    println!("ATA {}", apl_associated_token_account::ID);
+    println!("Token {}", apl_token::ID);
 
     let initialize_message = ArchMessage::new(
         &instructions,
@@ -335,6 +340,8 @@ pub async fn create_mint_and_mint_custom_amounts(
             processed_tx[0].logs
         ));
     }
+
+    println!("OK");
 
     Ok(mint_pubkey)
 }

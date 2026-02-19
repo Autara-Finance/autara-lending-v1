@@ -381,7 +381,7 @@ impl<T: AutaraReadClient> AutaraFullClientWithSigner<T> {
         Ok(events)
     }
 
-    pub fn tx_builder(&self) -> AutaraTransactionBuilder<T> {
+    pub fn tx_builder(&self) -> AutaraTransactionBuilder<'_, T> {
         AutaraTransactionBuilder {
             arch_client: &self.arch_client,
             autara_read_client: &self.read_client,
@@ -391,7 +391,7 @@ impl<T: AutaraReadClient> AutaraFullClientWithSigner<T> {
         }
     }
 
-    fn tx_broadcast(&self) -> AutaraTxBroadcast {
+    fn tx_broadcast(&self) -> AutaraTxBroadcast<'_> {
         AutaraTxBroadcast {
             program_id: self.read_client.autara_program_id(),
             arch_client: &self.arch_client,

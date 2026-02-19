@@ -3,7 +3,6 @@ use std::{collections::HashMap, ops::Deref};
 use anyhow::Context;
 use arch_sdk::{
     arch_program::pubkey::Pubkey, AccountFilter, AccountInfoWithPubkey, AsyncArchRpcClient,
-    WebSocketClient,
 };
 use autara_lib::{
     pda::{find_borrow_position_pda, find_global_config_pda, find_supply_position_pda},
@@ -59,6 +58,7 @@ impl AutaraReadClientImpl {
 
     pub async fn reload(&mut self) -> anyhow::Result<()> {
         let global_config_key = find_global_config_pda(&self.autara_program_id).0;
+
         let (markets, supply, borrow, global) = tokio::try_join!(
             self.load_program_accounts_pod(&self.autara_program_id, Some(market_filter())),
             self.load_program_accounts_pod(&self.autara_program_id, Some(supply_position_filter())),

@@ -637,8 +637,7 @@ impl<'a, T: AutaraReadClient> AutaraTransactionBuilder<'a, T> {
                 cache.get_blockhash()
             } else {
                 self.arch_client.get_best_block_hash().await?
-            }
-            .try_into()?,
+            },
         );
         Ok(TransactionToSign {
             message_hash: message.hash(),

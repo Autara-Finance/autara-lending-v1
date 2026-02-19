@@ -3,10 +3,11 @@ use std::{
     time::Duration,
 };
 
+use arch_sdk::arch_program::hash::Hash;
 use arch_sdk::AsyncArchRpcClient;
 
 pub struct BlockhashCache {
-    latest: Arc<RwLock<String>>,
+    latest: Arc<RwLock<Hash>>,
     job: tokio::task::JoinHandle<()>,
 }
 
@@ -37,8 +38,8 @@ impl BlockhashCache {
         Ok(BlockhashCache { latest, job })
     }
 
-    pub fn get_blockhash(&self) -> String {
-        self.latest.read().unwrap().clone()
+    pub fn get_blockhash(&self) -> Hash {
+        *self.latest.read().unwrap()
     }
 }
 

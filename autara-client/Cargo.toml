@@ -34,3 +34,8 @@ uuid = { workspace = true }
 axum = { workspace = true }
 prometheus = { workspace = true }
 futures = { workspace = true }
+apl-associated-token-account.workspace = true
+
+[[bin]]
+name = "autara-cli"
+path = "src/bin/cli.rs"

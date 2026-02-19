@@ -1,5 +1,5 @@
 use arch_program::bitcoin::Network;
-use arch_sdk::{generate_new_keypair, AsyncArchRpcClient};
+use arch_sdk::{generate_new_keypair, AsyncArchRpcClient, Config};
 use autara_pyth::fetch_and_push_feeds;
 use clap::Parser;
 
@@ -24,6 +24,17 @@ struct Args {
 
 const DEFAULT_FEEDS:&str = "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43,0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a";
 
+fn make_config(rpc: &str, network: Network) -> Config {
+    Config {
+        arch_node_url: rpc.to_string(),
+        node_endpoint: String::new(),
+        node_username: String::new(),
+        node_password: String::new(),
+        network,
+        titan_url: String::new(),
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 pub async fn main() {
     let args = Args::parse();
@@ -34,11 +45,12 @@ pub async fn main() {
                 .from_env_lossy(),
         )
         .init();
-    let client = AsyncArchRpcClient::new(&args.rpc);
+    let config = make_config(&args.rpc, args.network);
+    let client = AsyncArchRpcClient::new(&config);
     let (authority_keypair, _, _) = generate_new_keypair(args.network);
 
-    AsyncArchRpcClient::new(&args.rpc)
-        .create_and_fund_account_with_faucet(&authority_keypair, Network::Regtest)
+    AsyncArchRpcClient::new(&config)
+        .create_and_fund_account_with_faucet(&authority_keypair)
         .await
         .unwrap();
 

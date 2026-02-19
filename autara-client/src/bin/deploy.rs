@@ -20,7 +20,7 @@ fn main() -> anyhow::Result<()> {
         .enable_all()
         .build()?
         .block_on(async {
-            let arch_client = AsyncArchRpcClient::new(&config.arch_node_url);
+            let arch_client = AsyncArchRpcClient::new(&config);
             let test_env = AutaraTestEnv::new(
                 arch_client.clone(),
                 autara_stage_program_id(),
@@ -31,7 +31,7 @@ fn main() -> anyhow::Result<()> {
             let pubkey = Pubkey::from_slice(&admin.x_only_public_key().0.serialize());
 
             arch_client
-                .create_and_fund_account_with_faucet(&admin, config.network)
+                .create_and_fund_account_with_faucet(&admin)
                 .await?;
 
             let autara_client = AutaraFullClientWithSigner::new_simple(

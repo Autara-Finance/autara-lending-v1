@@ -80,7 +80,7 @@ impl PodOracleProvider {
         }
     }
 
-    pub fn oracle_provider_ref(&self) -> OracleProviderRef {
+    pub fn oracle_provider_ref(&self) -> OracleProviderRef<'_> {
         match self.kind {
             PodOracleProviderKind::Pyth => OracleProviderRef::Pyth(bytemuck::from_bytes(
                 &self.union[..PodOracleProviderKind::Pyth.size()],

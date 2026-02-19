@@ -91,7 +91,7 @@ impl PodInterestRateCurve {
         }
     }
 
-    pub fn interest_rate_kind_mut(&mut self) -> InterestRateKindCurveMut {
+    pub fn interest_rate_kind_mut(&mut self) -> InterestRateKindCurveMut<'_> {
         match self.kind {
             PodInterestRateCurveKind::Fixed => InterestRateKindCurveMut::Fixed(
                 bytemuck::from_bytes_mut(&mut self.union[..PodInterestRateCurveKind::Fixed.size()]),
