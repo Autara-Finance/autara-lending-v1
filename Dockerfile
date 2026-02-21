@@ -15,7 +15,6 @@ RUN apt-get update && \
 COPY --from=builder /app/target/release/autara-server /usr/local/bin/autara-server
 COPY tokens.json /app/tokens.json
 COPY keys/ /app/keys/
-COPY .env /app/.env
 
 WORKDIR /app
 EXPOSE 62776
