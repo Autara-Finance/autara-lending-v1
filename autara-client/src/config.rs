@@ -91,16 +91,16 @@ pub fn path_from_workspace(path: &str) -> String {
         .to_string()
 }
 
+pub fn file_to_pubkey(path: &str) -> Pubkey {
+    with_secret_key_file(path).unwrap().1
+}
+
 pub fn autara_stage_program_id() -> Pubkey {
-    with_secret_key_file(&path_from_workspace("keys/autara-stage.key"))
-        .unwrap()
-        .1
+    file_to_pubkey(&path_from_workspace("keys/autara-stage.key"))
 }
 
 pub fn autara_oracle_stage_program_id() -> Pubkey {
-    with_secret_key_file(&path_from_workspace("keys/autara-pyth-stage.key"))
-        .unwrap()
-        .1
+    file_to_pubkey(&path_from_workspace("keys/autara-pyth-stage.key"))
 }
 
 pub fn autara_stage_admin() -> Keypair {

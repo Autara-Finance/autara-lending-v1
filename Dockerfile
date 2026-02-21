@@ -19,4 +19,10 @@ COPY keys/ /app/keys/
 WORKDIR /app
 EXPOSE 62776
 
-CMD ["autara-server", "--tokens", "tokens.json", "--signer", "keys/autara-cli-signer.key", "--listen", "0.0.0.0:62776", "--network", "testnet"]
+CMD ["autara-server", \
+     "--tokens", "tokens.json", \
+     "--signer", "keys/autara-cli-signer.key", \
+     "--program-id", "53def2dc8516302842b10e356914d2a5f6b33425ba42aec684f706aa1cf64192", \
+     "--oracle-program-id", "eee682c27db375bebbc17ed9a76aaa935c8b72bc7de50d736f03e2dfbed84b15", \
+     "--listen", "0.0.0.0:62776", \
+     "--network", "testnet"]
