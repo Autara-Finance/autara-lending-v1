@@ -258,6 +258,7 @@ dependencies = [
  "auto_impl",
  "axum",
  "bitcoincore-rpc-async",
+ "bs58",
  "bytemuck",
  "clap",
  "dashmap",

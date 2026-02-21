@@ -223,6 +223,13 @@ async fn main() -> Result<(), anyhow::Error> {
     {
         tracing::warn!("Faucet funding failed (may already be funded): {:?}", e);
     }
+    tracing::info!("Funding token signer account via faucet...");
+    if let Err(e) = arch_client
+        .create_and_fund_account_with_faucet(&token_authority_keypair)
+        .await
+    {
+        tracing::warn!("Faucet funding failed (may already be funded): {:?}", e);
+    }
 
     // Create the client for market creation
     let mut client = AutaraFullClientWithSigner::new_simple(
