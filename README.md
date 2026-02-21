@@ -38,6 +38,22 @@ To build workspace, run:
 cargo build
 ```
 
+### Keys
+
+The `keys/` directory contains key files used by the protocol:
+
+| Key file | Purpose |
+|---|---|
+| `autara-stage.key` | Autara program ID (derived from this key) |
+| `autara-pyth-stage.key` | Oracle program ID (derived from this key) |
+| `autara-admin-stage.key` | Default admin key for development |
+| `autara-deployer.key` | Program deployer authority |
+| `autara-cli-signer.key` | Default CLI signer (set in `.env` as `AUTARA_SIGNER_KEY`) |
+| `autara-token-authority.key` | Mint authority for tokens created via `token setup` |
+| `token-btc.key` | Fixed keypair for the BTC token mint |
+| `token-usdc.key` | Fixed keypair for the USDC token mint |
+| `token-eth.key` | Fixed keypair for the ETH token mint |
+
 ### Local environment
 
 Setup an arch local environment:
@@ -53,22 +69,101 @@ Then, deploy the smart contracts:
 cargo run --bin deploy
 ```
 
-### Run Pyth Pusher
+### CLI
+
+The CLI (`autara-cli`) is used to interact with the protocol from the command line.
 
 ```bash
-cargo run --bin autara-pyth
+cargo run --bin autara-cli -- --help
 ```
 
-### Run demo
+Global options:
+
+- `--arch-node <URL>` — Arch node URL (default: `https://rpc.testnet.arch.network`)
+- `--signer <PATH>` — Path to signer key file (falls back to `AUTARA_SIGNER_KEY` env var)
+- `--network <NETWORK>` — Bitcoin network: `regtest`, `testnet`, or `mainnet` (default: `regtest`)
+- `--tokens <PATH>` — Path to `tokens.json` for resolving token names in output (default: `tokens.json`)
+
+#### Token setup
+
+Create BTC, USDC, and ETH token mints on-chain (idempotent) and write a `tokens.json` config file:
 
 ```bash
-cargo run --bin autara-client
+cargo run --bin autara-cli -- token setup --output tokens.json
+```
+
+The generated `tokens.json` contains mint addresses, decimals, key file paths, and the token authority info. This file is used by both the CLI (for token name display) and the server.
+
+#### Other CLI commands
+
+```bash
+# Read commands
+autara-cli read markets                    # List all markets
+autara-cli read market --market <PUBKEY>   # Get market details
+autara-cli read positions                  # Get user positions
+autara-cli read global-config              # Get global config
+
+# Transaction commands
+autara-cli tx create-market --config market.json --supply-mint <PUBKEY> --collateral-mint <PUBKEY>
+autara-cli tx supply --market <PUBKEY> --amount <ATOMS>
+autara-cli tx borrow --market <PUBKEY> --amount <ATOMS>
+autara-cli tx repay --market <PUBKEY> --amount <ATOMS>
+autara-cli tx deposit-collateral --market <PUBKEY> --amount <ATOMS>
+autara-cli tx withdraw-collateral --market <PUBKEY> --amount <ATOMS>
+
+# Token commands
+autara-cli token create-token --decimals 8
+autara-cli token mint --token <PUBKEY> --amount <ATOMS>
+autara-cli token list-accounts
+
+# Oracle commands
+autara-cli oracle fetch-price --feed 0x<FEED_ID>
+autara-cli oracle push-price --feed 0x<FEED_ID> --price 100000.0
+autara-cli oracle push-feeds --feed 0x<BTC_FEED> --feed 0x<USDC_FEED>
+autara-cli oracle market-feeds --market <PUBKEY>
 ```
 
 ### Autara Server
 
+The server provides a JSON-RPC API and manages markets, token minting, and oracle price feeds.
+
 ```bash
-cargo run --bin autara-server
+cargo run --bin autara-server -- --tokens tokens.json
+```
+
+Options:
+
+- `--tokens <PATH>` — **(required)** Path to `tokens.json` config
+- `--program-id <HEX>` — Autara program ID (defaults to `keys/autara-stage.key` address)
+- `--oracle-program-id <HEX>` — Oracle program ID (defaults to `keys/autara-pyth-stage.key` address)
+- `--signer <PATH>` — Signer key file (falls back to `AUTARA_SIGNER_KEY` env var)
+- `--arch-node <URL>` — Arch node URL (default: `https://rpc.testnet.arch.network`)
+- `--network <NETWORK>` — Bitcoin network (default: `testnet`)
+- `--listen <ADDR>` — RPC listen address (default: `0.0.0.0:62776`)
+- `--prometheus <ADDR>` — Prometheus exporter address (default: `0.0.0.0:62777`)
+- `--market-config <PATH>` — Custom market config JSON (optional, uses defaults otherwise)
+
+On startup the server will:
+1. Fund the signer account via faucet
+2. Create the global config if it doesn't exist
+3. Create markets for all token pair combinations (idempotent)
+4. Spawn a Pyth feed pusher in the background
+5. Start the JSON-RPC server and Prometheus exporter
+
+### Quickstart (testnet)
+
+```bash
+# 1. Deploy programs
+cargo run --bin deploy
+
+# 2. Create token mints
+cargo run --bin autara-cli -- token setup --output tokens.json
+
+# 3. Start the server
+cargo run --bin autara-server -- --tokens tokens.json
+
+# 4. Interact via CLI
+cargo run --bin autara-cli -- read markets
 ```
 
 ### Test
