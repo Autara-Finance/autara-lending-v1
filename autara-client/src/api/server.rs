@@ -47,6 +47,7 @@ impl AutaraServerApiServer for AutataServerContext {
         Ok(TransactionToSignResponse {
             transaction_to_sign: message_hash,
             message: runtime_tx.message.serialize(),
+            signatures: runtime_tx.signatures,
         })
     }
 
@@ -176,6 +177,7 @@ impl AutaraServerApiServer for AutataServerContext {
         Ok(TransactionToSignResponse {
             transaction_to_sign: tx.message_hash,
             message: tx.message.serialize(),
+            signatures: vec![],
         })
     }
 
@@ -189,13 +191,13 @@ impl AutaraServerApiServer for AutataServerContext {
             .tx_broadcast()
             .broadcast_transaction(RuntimeTransaction {
                 version: 0,
-                signatures: vec![request.signature.clone()],
+                signatures: request.signatures.clone(),
                 message,
             })
             .await
             .internal("Failed to broadcast transaction")?;
         Ok(SendTransactionResponse {
-            signature: request.signature,
+            signature: request.signatures[0].clone(),
             events,
         })
     }

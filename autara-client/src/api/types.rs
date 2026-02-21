@@ -195,12 +195,13 @@ pub struct UserParams {
 pub struct TransactionToSignResponse {
     pub transaction_to_sign: Vec<u8>,
     pub message: Vec<u8>,
+    pub signatures: Vec<Signature>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendTransactionRequest {
-    pub signature: Signature,
+    pub signatures: Vec<Signature>,
     pub message: Vec<u8>,
 }
 
