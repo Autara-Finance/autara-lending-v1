@@ -1,5 +1,6 @@
 use std::{ops::Deref, sync::Arc};
 
+use anyhow::Context;
 use arch_sdk::{arch_program::sanitized::ArchMessage, AsyncArchRpcClient, RuntimeTransaction};
 use jsonrpsee::{
     core::RpcResult,
@@ -32,23 +33,27 @@ impl Deref for AutataServerContext {
 
 #[jsonrpsee::core::async_trait]
 impl AutaraServerApiServer for AutataServerContext {
-    async fn initialize(&self, request: UserParams) -> RpcResult<()> {
+    async fn initialize(&self, request: UserParams) -> RpcResult<TransactionToSignResponse> {
         let client = self.async_arch_client();
-        client
-            .call_method_with_params_raw::<_>("create_account_with_faucet", request.user)
-            .await
-            .internal("Failed to create account with faucet")?;
-        client
-            .call_method_with_params_raw::<_>("request_airdrop", request.user)
-            .await
-            .internal("Failed to request airdrop")?;
         for minter in &self.minters {
             minter
                 .mint_to(&request.user, 100_000_000_000)
                 .await
                 .internal("Failed to mint tokens")?;
         }
-        Ok(())
+        let faucet_value = client
+            .call_method_with_params_raw::<_>("create_account_with_faucet", request.user)
+            .await
+            .internal("Failed to call create_account_with_faucet")?
+            .context("create_account_with_faucet returned no payload")
+            .internal("Failed to create account with faucet")?;
+        let runtime_tx: RuntimeTransaction =
+            serde_json::from_value(faucet_value).internal("Failed to parse faucet transaction")?;
+        let message_hash = runtime_tx.message.hash();
+        Ok(TransactionToSignResponse {
+            transaction_to_sign: message_hash,
+            message: runtime_tx.message.serialize(),
+        })
     }
 
     async fn get_all_markets(&self) -> RpcResult<Vec<FullMarket>> {
@@ -73,6 +78,7 @@ impl AutaraServerApiServer for AutataServerContext {
         request: AutaraTransactionRequest,
     ) -> RpcResult<TransactionToSignResponse> {
         request.build_tx_tracing_params().trace();
+
         let tx = match request {
             AutaraTransactionRequest::Supply(request) => {
                 self.tx_builder(&request.user)
@@ -170,6 +176,10 @@ impl AutaraServerApiServer for AutataServerContext {
     ) -> RpcResult<SendTransactionResponse> {
         let message =
             ArchMessage::deserialize(&request.message).internal("Failed to deserialize message")?;
+        // TODO
+        if let Some(signer) = message.get_account_key(0) {
+            let _ = self.async_arch_client().request_airdrop(*signer).await;
+        }
         let events = self
             .tx_broadcast()
             .broadcast_transaction(RuntimeTransaction {

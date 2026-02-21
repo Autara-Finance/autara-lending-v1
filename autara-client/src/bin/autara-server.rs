@@ -355,6 +355,7 @@ async fn main() -> Result<(), anyhow::Error> {
         tracing::info!("Spawning Pyth feed pusher for {} feeds", feeds.len());
         let pusher_client = arch_client.clone();
         let pusher_signer = signer_keypair;
+        let to_airdrop = signer_pubkey;
         tokio::spawn(async move {
             fetch_and_push_feeds(
                 &pusher_client,
@@ -364,6 +365,13 @@ async fn main() -> Result<(), anyhow::Error> {
                 network,
             )
             .await;
+        });
+        let aidrop_client = arch_client.clone();
+        tokio::spawn(async move {
+            loop {
+                let _ = aidrop_client.request_airdrop(to_airdrop).await;
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
         });
     }
 
@@ -388,7 +396,11 @@ async fn main() -> Result<(), anyhow::Error> {
         .allow_headers(Any)
         .allow_origin(Any);
     let server = Server::builder()
-        .set_http_middleware(tower::ServiceBuilder::new().layer(cors))
+        .set_http_middleware(
+            tower::ServiceBuilder::new()
+                .timeout(Duration::from_secs(60))
+                .layer(cors),
+        )
         .set_rpc_middleware(
             RpcServiceBuilder::new().layer(autara_client::api::tracing::AutaraTraceLayer),
         )
