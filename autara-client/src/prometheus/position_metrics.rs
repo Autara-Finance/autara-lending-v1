@@ -88,7 +88,7 @@ impl PositionMetrics {
             ])
             .set(borrow.collateral_usd);
         self.position_ltv
-            .with_label_values(&[market, &borrow.user])
+            .with_label_values(&[market, position, &borrow.user])
             .set(borrow.ltv);
     }
 
