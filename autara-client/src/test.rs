@@ -235,8 +235,9 @@ impl TokenMinter {
     }
 
     pub async fn mint_to(&self, user: &Pubkey, amount: u64) -> anyhow::Result<()> {
-        let create_user_ata = create_ata_ix(&self.authority_pubkey, None, user, &self.mint_pubkey);
         let user_ata = get_associated_token_address(user, &self.mint_pubkey);
+        let ata_exists = self.client.read_account_info(user_ata).await.is_ok();
+
         let mint_ix = apl_token::instruction::mint_to(
             &apl_token::id(),
             &self.mint_pubkey,
@@ -245,8 +246,20 @@ impl TokenMinter {
             &[],
             amount,
         )?;
+
+        let mut ixs = Vec::new();
+        if !ata_exists {
+            ixs.push(create_ata_ix(
+                &self.authority_pubkey,
+                None,
+                user,
+                &self.mint_pubkey,
+            ));
+        }
+        ixs.push(mint_ix);
+
         let message = ArchMessage::new(
-            &[create_user_ata, mint_ix],
+            &ixs,
             Some(self.authority_pubkey),
             self.client.get_best_block_hash().await?.try_into()?,
         );
