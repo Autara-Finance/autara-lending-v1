@@ -7,3 +7,4 @@ new_blocks.txt
 authority.key
 user.key
 .DS_Store
+.env

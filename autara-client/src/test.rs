@@ -20,9 +20,15 @@ use crate::config::path_from_workspace;
 pub const NODE1_ADDRESS: &str = "http://localhost:9002/";
 pub const BITCOIN_NETWORK: bitcoin::Network = bitcoin::Network::Testnet;
 
-pub fn deploy_program(config: &Config, key: &str, path: &str) -> Pubkey {
+pub fn deploy_program(config: &Config, deployer: Option<&str>, key: &str, path: &str) -> Pubkey {
     let (program_keypair, pubkey) = with_secret_key_file(&path_from_workspace(key)).unwrap();
-    let (authority_keypair, _authority_pk, _) = generate_new_keypair(config.network);
+    let (authority_keypair, _) = deployer.map_or_else(
+        || {
+            let (k, pk, _) = generate_new_keypair(config.network);
+            (k, pk)
+        },
+        |owner| with_secret_key_file(&path_from_workspace(owner)).unwrap(),
+    );
     let client = ArchRpcClient::new(config);
     for _ in 0..2 {
         client
@@ -48,6 +54,7 @@ pub fn deploy_program(config: &Config, key: &str, path: &str) -> Pubkey {
 pub fn deploy_new_autara(config: &Config) -> Pubkey {
     deploy_program(
         config,
+        Some("keys/autara-deployer.key"),
         "keys/autara-stage.key",
         "target/deploy/autara_program.so",
     )
@@ -56,6 +63,7 @@ pub fn deploy_new_autara(config: &Config) -> Pubkey {
 pub fn deploy_new_autara_pyth(config: &Config) -> Pubkey {
     deploy_program(
         config,
+        Some("keys/autara-deployer.key"),
         "keys/autara-pyth-stage.key",
         "target/deploy/autara_oracle.so",
     )
@@ -207,8 +215,54 @@ impl TokenMinter {
         })
     }
 
+    pub fn from_existing(
+        client: AsyncArchRpcClient,
+        authority_keypair: Keypair,
+        mint_pubkey: Pubkey,
+    ) -> Self {
+        let authority_pubkey =
+            Pubkey::from_slice(&authority_keypair.x_only_public_key().0.serialize());
+        Self {
+            client,
+            authority_keypair,
+            authority_pubkey,
+            mint_pubkey,
+        }
+    }
+
     pub fn mint_pubkey(&self) -> Pubkey {
         self.mint_pubkey
+    }
+
+    pub async fn mint_to(&self, user: &Pubkey, amount: u64) -> anyhow::Result<()> {
+        let create_user_ata = create_ata_ix(&self.authority_pubkey, None, user, &self.mint_pubkey);
+        let user_ata = get_associated_token_address(user, &self.mint_pubkey);
+        let mint_ix = apl_token::instruction::mint_to(
+            &apl_token::id(),
+            &self.mint_pubkey,
+            &user_ata,
+            &self.authority_pubkey,
+            &[],
+            amount,
+        )?;
+        let message = ArchMessage::new(
+            &[create_user_ata, mint_ix],
+            Some(self.authority_pubkey),
+            self.client.get_best_block_hash().await?.try_into()?,
+        );
+        let signers = vec![self.authority_keypair];
+        let txid = build_and_sign_transaction(message, signers, BITCOIN_NETWORK)
+            .expect("Failed to build and sign transaction");
+        let txids = self.client.send_transactions(vec![txid]).await?;
+        let processed_tx = self.client.wait_for_processed_transactions(txids).await?;
+        if processed_tx[0].status != Status::Processed {
+            return Err(anyhow::anyhow!(
+                "Failed to mint tokens: {:?}, logs = {:?}",
+                processed_tx[0].status,
+                processed_tx[0].logs
+            ));
+        }
+        Ok(())
     }
 
     pub async fn credit_to(&self, user: &Pubkey, amount: u64) -> anyhow::Result<()> {
@@ -337,8 +391,5 @@ pub async fn create_mint_and_mint_custom_amounts(
             processed_tx[0].logs
         ));
     }
-
-    println!("OK");
-
     Ok(mint_pubkey)
 }

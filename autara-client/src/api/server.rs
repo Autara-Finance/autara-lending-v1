@@ -14,12 +14,12 @@ use crate::{
         read::AutaraReadClient, shared_autara_state::AutaraSharedState,
     },
     rpc_ext::ArchAsyncRpcExt,
-    test::AutaraTestEnv,
+    test::TokenMinter,
 };
 
 pub struct AutataServerContext {
     pub client: AutaraFullClientWithoutSigner<Arc<AutaraSharedState>>,
-    pub env: AutaraTestEnv,
+    pub minters: Vec<TokenMinter>,
 }
 
 impl Deref for AutataServerContext {
@@ -42,16 +42,12 @@ impl AutaraServerApiServer for AutataServerContext {
             .call_method_with_params_raw::<_>("request_airdrop", request.user)
             .await
             .internal("Failed to request airdrop")?;
-        self.env
-            .supply_minter
-            .credit_to(&request.user, 100_000_000_000)
-            .await
-            .internal("Failed to credit supply tokens")?;
-        self.env
-            .collateral_minter
-            .credit_to(&request.user, 100_000_000_000)
-            .await
-            .internal("Failed to credit collateral tokens")?;
+        for minter in &self.minters {
+            minter
+                .mint_to(&request.user, 100_000_000_000)
+                .await
+                .internal("Failed to mint tokens")?;
+        }
         Ok(())
     }
 
@@ -216,7 +212,7 @@ impl AutaraServerApiServer for AutataServerContext {
 
 pub async fn build_autara_server(
     read_client: Arc<AutaraSharedState>,
-    test_env: AutaraTestEnv,
+    minters: Vec<TokenMinter>,
     arch_client: AsyncArchRpcClient,
 ) -> anyhow::Result<RpcModule<AutataServerContext>> {
     let context = AutataServerContext {
@@ -225,7 +221,7 @@ pub async fn build_autara_server(
             arch_client.clone(),
             BlockhashCache::new(arch_client, None).await?,
         ),
-        env: test_env,
+        minters,
     };
     Ok(context.into_rpc())
 }

@@ -41,7 +41,7 @@ impl ArchConfig {
         Self {
             bitcoin_node_endpoint:
                 "https://bitcoin-node.test.aws.archnetwork.xyz:49332/wallet/testwallet".to_string(),
-            arch_node_url: "https://rpc-gamma.test.arch.network/".to_string(),
+            arch_node_url: "https://rpc.testnet.arch.network".into(),
             bitcoin_node_password: "bitcoin".to_string(),
             bitcoin_node_username: "uU1taFBTUvae96UCtA8YxAepYTFszYvYVSXK8xgzBs0".to_string(),
         }

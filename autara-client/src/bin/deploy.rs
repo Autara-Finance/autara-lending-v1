@@ -14,8 +14,8 @@ fn main() -> anyhow::Result<()> {
         arch_node_url: "https://rpc.testnet.arch.network".into(),
         titan_url: "".into(),
     };
-    deploy_new_autara_pyth(&config);
     deploy_new_autara(&config);
+    deploy_new_autara_pyth(&config);
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?

@@ -1,14 +1,27 @@
-use std::{str::FromStr, time::Duration};
+use std::{collections::HashMap, str::FromStr, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
 use arch_sdk::{
-    arch_program::{bitcoin::Network, pubkey::Pubkey},
-    with_secret_key_file,
+    arch_program::{
+        bitcoin::{key::Keypair, Network},
+        program_pack::Pack,
+        pubkey::Pubkey,
+        rent::minimum_rent,
+        sanitized::ArchMessage,
+    },
+    build_and_sign_transaction, generate_new_keypair, with_secret_key_file, Status,
 };
 use autara_client::{
     client::{client_with_signer::AutaraFullClientWithSigner, read::AutaraReadClient},
     config::{autara_oracle_stage_program_id, autara_stage_program_id, ArchConfig},
+    rpc_ext::ArchAsyncRpcExt,
 };
+use autara_lib::{
+    ixs::CreateMarketInstruction,
+    oracle::pyth::PythPrice,
+    token::{create_ata_ix, get_associated_token_address},
+};
+use autara_pyth::{fetch_and_push_feeds, fetch_pyth_price, get_pyth_account, AutaraPythPusherClient};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{util::SubscriberInitExt, EnvFilter};
 
@@ -28,6 +41,10 @@ struct Cli {
     #[arg(long, default_value = "regtest")]
     network: String,
 
+    /// Path to tokens.json config (for resolving token names in output)
+    #[arg(long, default_value = "tokens.json")]
+    tokens: String,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -41,6 +58,14 @@ enum Commands {
     /// Transaction operations
     #[command(subcommand)]
     Tx(TxCommands),
+
+    /// Token operations (create, mint, list accounts)
+    #[command(subcommand)]
+    Token(TokenCommands),
+
+    /// Oracle operations (fetch, push, inspect feeds)
+    #[command(subcommand)]
+    Oracle(OracleCommands),
 }
 
 #[derive(Subcommand)]
@@ -90,6 +115,21 @@ enum ReadCommands {
 
 #[derive(Subcommand)]
 enum TxCommands {
+    /// Create a new lending market from a JSON config file
+    CreateMarket {
+        /// Path to JSON config file containing CreateMarketInstruction fields
+        #[arg(long)]
+        config: String,
+
+        /// Supply token mint pubkey
+        #[arg(long)]
+        supply_mint: String,
+
+        /// Collateral token mint pubkey
+        #[arg(long)]
+        collateral_mint: String,
+    },
+
     /// Supply assets to a market
     Supply {
         /// Market pubkey
@@ -201,6 +241,80 @@ enum TxCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum TokenCommands {
+    /// Create a new token mint
+    CreateToken {
+        /// Number of decimals for the token (default: 9)
+        #[arg(long)]
+        decimals: u8,
+    },
+
+    /// Mint tokens to an address
+    Mint {
+        /// Token mint pubkey
+        #[arg(long)]
+        token: String,
+
+        /// Recipient pubkey (defaults to signer)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Amount in base units (atoms)
+        #[arg(long)]
+        amount: u64,
+    },
+
+    /// List all token accounts for an owner
+    ListAccounts {
+        /// Owner pubkey (defaults to signer)
+        #[arg(long)]
+        owner: Option<String>,
+    },
+
+    /// Create BTC, USDC, ETH token mints (if not already on-chain) and write tokens.json config
+    Setup {
+        /// Output path for the tokens config file
+        #[arg(long, default_value = "tokens.json")]
+        output: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum OracleCommands {
+    /// Fetch latest price from Pyth API for given feed IDs
+    FetchPrice {
+        /// Pyth feed IDs (hex, with or without 0x prefix)
+        #[arg(long, num_args = 1..)]
+        feed: Vec<String>,
+    },
+
+    /// Push a dummy price to the on-chain oracle (for testing)
+    PushPrice {
+        /// Pyth feed ID (hex, with or without 0x prefix)
+        #[arg(long)]
+        feed: String,
+
+        /// Price value (e.g. 100000.0 for BTC)
+        #[arg(long)]
+        price: f64,
+    },
+
+    /// Continuously fetch and push Pyth feeds to on-chain oracle
+    PushFeeds {
+        /// Pyth feed IDs (hex, with 0x prefix)
+        #[arg(long, num_args = 1..)]
+        feed: Vec<String>,
+    },
+
+    /// Show oracle feed info for a market
+    MarketFeeds {
+        /// Market pubkey
+        #[arg(long)]
+        market: String,
+    },
+}
+
 fn parse_network(network: &str) -> Result<Network> {
     match network.to_lowercase().as_str() {
         "regtest" => Ok(Network::Regtest),
@@ -281,9 +395,18 @@ async fn main() -> Result<()> {
         .await
         .context("could not load autara state with RPC")??;
     tracing::info!("Loaded protocol state...");
+
+    let token_names = TokenNames::load(&cli.tokens);
+
     match cli.command {
-        Commands::Read(read_cmd) => handle_read_command(&client, read_cmd).await,
-        Commands::Tx(tx_cmd) => handle_tx_command(&client, tx_cmd).await,
+        Commands::Read(read_cmd) => handle_read_command(&client, read_cmd, &token_names).await,
+        Commands::Tx(tx_cmd) => handle_tx_command(&client, tx_cmd, &token_names).await,
+        Commands::Token(token_cmd) => {
+            handle_token_command(&client, token_cmd, network, signer, &token_names).await
+        }
+        Commands::Oracle(oracle_cmd) => {
+            handle_oracle_command(&client, oracle_cmd, network, signer).await
+        }
     }
 }
 
@@ -292,6 +415,7 @@ async fn handle_read_command(
         autara_client::client::single_thread_client::AutaraReadClientImpl,
     >,
     cmd: ReadCommands,
+    tn: &TokenNames,
 ) -> Result<()> {
     match cmd {
         ReadCommands::Markets => {
@@ -301,9 +425,9 @@ async fn handle_read_command(
                 count += 1;
                 let m = market.market();
                 println!("\nMarket: {:?}", pubkey);
-                println!("  Supply Token: {:?}", m.supply_token_info().mint);
+                println!("  Supply Token: {}", tn.name(&m.supply_token_info().mint));
                 println!("  Supply Decimals: {}", m.supply_token_info().decimals);
-                println!("  Collateral Token: {:?}", m.collateral_token_info().mint);
+                println!("  Collateral Token: {}", tn.name(&m.collateral_token_info().mint));
                 println!(
                     "  Collateral Decimals: {}",
                     m.collateral_token_info().decimals
@@ -334,10 +458,10 @@ async fn handle_read_command(
                 println!("=== Market Details ===");
                 println!("Pubkey: {:?}", market_key);
                 println!("\nSupply Vault:");
-                println!("  Token: {:?}", m.supply_token_info().mint);
+                println!("  Token: {}", tn.name(&m.supply_token_info().mint));
                 println!("  Decimals: {}", m.supply_token_info().decimals);
                 println!("\nCollateral Vault:");
-                println!("  Token: {:?}", m.collateral_token_info().mint);
+                println!("  Token: {}", tn.name(&m.collateral_token_info().mint));
                 println!("  Decimals: {}", m.collateral_token_info().decimals);
                 println!("\nRisk Config:");
                 println!("  Max LTV: {}", m.config().ltv_config().max_ltv);
@@ -473,8 +597,33 @@ async fn handle_tx_command(
         autara_client::client::single_thread_client::AutaraReadClientImpl,
     >,
     cmd: TxCommands,
+    tn: &TokenNames,
 ) -> Result<()> {
     match cmd {
+        TxCommands::CreateMarket {
+            config,
+            supply_mint,
+            collateral_mint,
+        } => {
+            let supply_mint_key = parse_pubkey(&supply_mint)?;
+            let collateral_mint_key = parse_pubkey(&collateral_mint)?;
+
+            let config_json = std::fs::read_to_string(&config)
+                .context(format!("Failed to read config file: {}", config))?;
+            let create_market_ix: CreateMarketInstruction =
+                serde_json::from_str(&config_json).context("Failed to parse market config JSON")?;
+
+            println!(
+                "Creating market with supply mint {} and collateral mint {}...",
+                tn.name(&supply_mint_key), tn.name(&collateral_mint_key)
+            );
+            let market_pubkey = client
+                .create_market(create_market_ix, supply_mint_key, collateral_mint_key)
+                .await?;
+            println!("Market created successfully!");
+            println!("Market: {:?}", market_pubkey);
+        }
+
         TxCommands::Supply { market, amount } => {
             let market_key = parse_pubkey(&market)?;
             println!("Supplying {} atoms to market {:?}...", amount, market_key);
@@ -576,4 +725,451 @@ async fn handle_tx_command(
         }
     }
     Ok(())
+}
+
+async fn handle_token_command(
+    client: &AutaraFullClientWithSigner<
+        autara_client::client::single_thread_client::AutaraReadClientImpl,
+    >,
+    cmd: TokenCommands,
+    network: Network,
+    signer_keypair: Keypair,
+    tn: &TokenNames,
+) -> Result<()> {
+    let rpc = client.rpc_client();
+    let signer_pubkey = *client.signer_pubkey();
+
+    match cmd {
+        TokenCommands::CreateToken { decimals } => {
+            println!("Creating new token mint with {} decimals...", decimals);
+
+            let (mint_keypair, mint_pubkey, _) = generate_new_keypair(network);
+            create_mint_on_chain(
+                rpc,
+                &signer_pubkey,
+                signer_keypair,
+                &signer_pubkey,
+                mint_keypair,
+                &mint_pubkey,
+                decimals,
+                network,
+            )
+            .await?;
+
+            println!("Token created successfully!");
+            println!("Mint: {:?}", mint_pubkey);
+        }
+
+        TokenCommands::Mint { token, to, amount } => {
+            let mint_pubkey = parse_pubkey(&token)?;
+            let recipient = if let Some(ref to_str) = to {
+                parse_pubkey(to_str)?
+            } else {
+                signer_pubkey
+            };
+
+            println!(
+                "Minting {} atoms of {} to {:?}...",
+                amount, tn.name(&mint_pubkey), recipient
+            );
+
+            let create_ata = create_ata_ix(&signer_pubkey, None, &recipient, &mint_pubkey);
+            let recipient_ata = get_associated_token_address(&recipient, &mint_pubkey);
+
+            let mint_to_ix = apl_token::instruction::mint_to(
+                &apl_token::id(),
+                &mint_pubkey,
+                &recipient_ata,
+                &signer_pubkey,
+                &[],
+                amount,
+            )?;
+
+            let msg = ArchMessage::new(
+                &[create_ata, mint_to_ix],
+                Some(signer_pubkey),
+                rpc.get_best_block_hash().await?.try_into()?,
+            );
+            let tx = build_and_sign_transaction(msg, vec![signer_keypair], network)
+                .context("Failed to build mint tx")?;
+            let txids = rpc.send_transactions(vec![tx]).await?;
+            let processed = rpc.wait_for_processed_transactions(txids).await?;
+            if processed[0].status != Status::Processed {
+                anyhow::bail!(
+                    "Failed to mint tokens: {:?}, logs = {:?}",
+                    processed[0].status,
+                    processed[0].logs
+                );
+            }
+
+            println!("Mint successful!");
+            println!("Recipient ATA: {:?}", recipient_ata);
+        }
+
+        TokenCommands::ListAccounts { owner } => {
+            let owner_pubkey = if let Some(ref owner_str) = owner {
+                parse_pubkey(owner_str)?
+            } else {
+                signer_pubkey
+            };
+
+            println!("=== Token Accounts for {:?} ===", owner_pubkey);
+            let balances = rpc.get_all_balances(&owner_pubkey).await?;
+
+            if balances.is_empty() {
+                println!("No token accounts found");
+            } else {
+                for (mint, balance) in &balances {
+                    println!("  {}  Balance: {}", tn.name(mint), balance);
+                }
+                println!("\nTotal token accounts: {}", balances.len());
+            }
+        }
+
+        TokenCommands::Setup { output } => {
+            const TOKEN_AUTHORITY_KEY: &str = "keys/autara-token-authority.key";
+
+            let (_, token_authority_pubkey) = with_secret_key_file(TOKEN_AUTHORITY_KEY)
+                .context(format!("Failed to load token authority key: {}", TOKEN_AUTHORITY_KEY))?;
+
+            let tokens = vec![
+                TokenDef {
+                    name: "BTC",
+                    key_file: "keys/token-btc.key",
+                    decimals: 8,
+                },
+                TokenDef {
+                    name: "USDC",
+                    key_file: "keys/token-usdc.key",
+                    decimals: 6,
+                },
+                TokenDef {
+                    name: "ETH",
+                    key_file: "keys/token-eth.key",
+                    decimals: 8,
+                },
+            ];
+
+            println!("=== Token Setup ===");
+            println!("Token authority: {:?}", token_authority_pubkey);
+            let mut config_entries = serde_json::Map::new();
+
+            // Write authority info at the top level
+            config_entries.insert(
+                "authorityKeyFile".to_string(),
+                serde_json::Value::String(TOKEN_AUTHORITY_KEY.to_string()),
+            );
+            config_entries.insert(
+                "authority".to_string(),
+                serde_json::Value::String(hex::encode(token_authority_pubkey.serialize())),
+            );
+
+            let mut tokens_map = serde_json::Map::new();
+            for token_def in &tokens {
+                let (mint_keypair, mint_pubkey) = with_secret_key_file(token_def.key_file)
+                    .context(format!(
+                        "Failed to load key file: {}",
+                        token_def.key_file
+                    ))?;
+
+                let already_exists = account_exists(rpc, &mint_pubkey).await;
+
+                if already_exists {
+                    println!(
+                        "  {} mint already exists: {:?}",
+                        token_def.name, mint_pubkey
+                    );
+                } else {
+                    println!(
+                        "  Creating {} mint ({} decimals)...",
+                        token_def.name, token_def.decimals
+                    );
+                    create_mint_on_chain(
+                        rpc,
+                        &signer_pubkey,
+                        signer_keypair,
+                        &token_authority_pubkey,
+                        mint_keypair,
+                        &mint_pubkey,
+                        token_def.decimals,
+                        network,
+                    )
+                    .await
+                    .context(format!("Failed to create {} mint", token_def.name))?;
+                    println!("  {} mint created: {:?}", token_def.name, mint_pubkey);
+                }
+
+                let mut entry = serde_json::Map::new();
+                entry.insert(
+                    "mint".to_string(),
+                    serde_json::Value::String(hex::encode(mint_pubkey.serialize())),
+                );
+                entry.insert(
+                    "decimals".to_string(),
+                    serde_json::Value::Number(token_def.decimals.into()),
+                );
+                entry.insert(
+                    "keyFile".to_string(),
+                    serde_json::Value::String(token_def.key_file.to_string()),
+                );
+                tokens_map
+                    .insert(token_def.name.to_string(), serde_json::Value::Object(entry));
+            }
+            config_entries.insert("tokens".to_string(), serde_json::Value::Object(tokens_map));
+
+            let config = serde_json::Value::Object(config_entries);
+            let config_json = serde_json::to_string_pretty(&config)?;
+            std::fs::write(&output, &config_json)
+                .context(format!("Failed to write config to {}", output))?;
+            println!("\nConfig written to {}", output);
+            println!("{}", config_json);
+        }
+    }
+    Ok(())
+}
+
+struct TokenDef {
+    name: &'static str,
+    key_file: &'static str,
+    decimals: u8,
+}
+
+/// Resolves mint pubkeys to human-readable token names from tokens.json
+struct TokenNames {
+    by_mint: HashMap<Pubkey, String>,
+}
+
+impl TokenNames {
+    fn load(path: &str) -> Self {
+        let mut by_mint = HashMap::new();
+        if let Ok(json) = std::fs::read_to_string(path) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
+                if let Some(tokens) = val.get("tokens").and_then(|t| t.as_object()) {
+                    for (name, entry) in tokens {
+                        if let Some(mint_hex) = entry.get("mint").and_then(|m| m.as_str()) {
+                            if let Ok(bytes) = hex::decode(mint_hex) {
+                                if bytes.len() == 32 {
+                                    let pubkey = Pubkey::from(<[u8; 32]>::try_from(bytes.as_slice()).unwrap());
+                                    by_mint.insert(pubkey, name.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Self { by_mint }
+    }
+
+    fn name(&self, pubkey: &Pubkey) -> String {
+        match self.by_mint.get(pubkey) {
+            Some(name) => format!("{} ({:?})", name, pubkey),
+            None => format!("{:?}", pubkey),
+        }
+    }
+}
+
+async fn account_exists(rpc: &arch_sdk::AsyncArchRpcClient, pubkey: &Pubkey) -> bool {
+    match rpc.read_account_info(*pubkey).await {
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+
+async fn create_mint_on_chain(
+    rpc: &arch_sdk::AsyncArchRpcClient,
+    payer: &Pubkey,
+    payer_keypair: Keypair,
+    mint_authority: &Pubkey,
+    mint_keypair: Keypair,
+    mint_pubkey: &Pubkey,
+    decimals: u8,
+    network: Network,
+) -> Result<()> {
+    // Step 1: Create the mint account
+    let create_msg = ArchMessage::new(
+        &[arch_sdk::arch_program::system_instruction::create_account(
+            payer,
+            mint_pubkey,
+            minimum_rent(apl_token::state::Mint::LEN),
+            apl_token::state::Mint::LEN as u64,
+            &apl_token::id(),
+        )],
+        Some(*payer),
+        rpc.get_best_block_hash().await?.try_into()?,
+    );
+    let tx = build_and_sign_transaction(create_msg, vec![payer_keypair, mint_keypair], network)
+        .context("Failed to build create-account tx")?;
+    let txids = rpc.send_transactions(vec![tx]).await?;
+    let processed = rpc.wait_for_processed_transactions(txids).await?;
+    if processed[0].status != Status::Processed {
+        anyhow::bail!(
+            "Failed to create mint account: {:?}, logs = {:?}",
+            processed[0].status,
+            processed[0].logs
+        );
+    }
+
+    // Step 2: Initialize the mint with dedicated mint authority
+    let init_ix = apl_token::instruction::initialize_mint(
+        &apl_token::id(),
+        mint_pubkey,
+        mint_authority,
+        Some(mint_authority),
+        decimals,
+    )?;
+    let init_msg = ArchMessage::new(
+        &[init_ix],
+        Some(*payer),
+        rpc.get_best_block_hash().await?.try_into()?,
+    );
+    let tx = build_and_sign_transaction(init_msg, vec![payer_keypair, mint_keypair], network)
+        .context("Failed to build init-mint tx")?;
+    let txids = rpc.send_transactions(vec![tx]).await?;
+    let processed = rpc.wait_for_processed_transactions(txids).await?;
+    if processed[0].status != Status::Processed {
+        anyhow::bail!(
+            "Failed to initialize mint: {:?}, logs = {:?}",
+            processed[0].status,
+            processed[0].logs
+        );
+    }
+    Ok(())
+}
+
+async fn handle_oracle_command(
+    client: &AutaraFullClientWithSigner<
+        autara_client::client::single_thread_client::AutaraReadClientImpl,
+    >,
+    cmd: OracleCommands,
+    network: Network,
+    signer_keypair: Keypair,
+) -> Result<()> {
+    let rpc = client.rpc_client();
+    let oracle_program_id = autara_oracle_stage_program_id();
+
+    match cmd {
+        OracleCommands::FetchPrice { feed } => {
+            let feeds: Vec<String> = feed
+                .iter()
+                .map(|f| {
+                    if f.starts_with("0x") {
+                        f.clone()
+                    } else {
+                        format!("0x{}", f)
+                    }
+                })
+                .collect();
+
+            println!("Fetching prices from Pyth API...");
+            let result = fetch_pyth_price(&feeds).await?;
+
+            for data in &result.parsed {
+                let price_f = data.price.as_float();
+                let ema_f = data.ema_price.as_float();
+                println!("\nFeed: 0x{}", data.id);
+                println!("  Price: {}", price_f);
+                println!(
+                    "  Confidence: {}",
+                    data.price.conf as f64 * 10f64.powi(data.price.expo)
+                );
+                println!("  EMA Price: {}", ema_f);
+                println!("  Expo: {}", data.price.expo);
+                println!("  Publish Time: {}", data.price.publish_time);
+
+                let mut feed_id = [0u8; 32];
+                hex::decode_to_slice(&data.id, &mut feed_id)
+                    .context("Invalid feed ID in response")?;
+                let oracle_account = get_pyth_account(&oracle_program_id, feed_id);
+                println!("  On-chain Oracle Account: {:?}", oracle_account);
+            }
+        }
+
+        OracleCommands::PushPrice { feed, price } => {
+            let feed_hex = feed.strip_prefix("0x").unwrap_or(&feed);
+            let mut feed_id = [0u8; 32];
+            hex::decode_to_slice(feed_hex, &mut feed_id).context("Invalid feed ID hex")?;
+
+            println!("Pushing price {} for feed 0x{}...", price, feed_hex);
+
+            let pyth_price = PythPrice::from_dummy(feed_id, price);
+            let pusher = AutaraPythPusherClient {
+                client: rpc.clone(),
+                autara_oracle_program_id: oracle_program_id,
+                network,
+            };
+            pusher
+                .push_pyth_price(&signer_keypair, feed_id, &pyth_price)
+                .await?;
+
+            let oracle_account = get_pyth_account(&oracle_program_id, feed_id);
+            println!("Price pushed successfully!");
+            println!("Oracle Account: {:?}", oracle_account);
+        }
+
+        OracleCommands::PushFeeds { feed } => {
+            let feeds: Vec<String> = feed
+                .iter()
+                .map(|f| {
+                    if f.starts_with("0x") {
+                        f.clone()
+                    } else {
+                        format!("0x{}", f)
+                    }
+                })
+                .collect();
+
+            println!(
+                "Starting continuous Pyth feed pusher for {} feeds...",
+                feeds.len()
+            );
+            println!("Press Ctrl+C to stop.");
+            for f in &feeds {
+                println!("  Feed: {}", f);
+            }
+            fetch_and_push_feeds(rpc, &oracle_program_id, &signer_keypair, &feeds, network).await;
+        }
+
+        OracleCommands::MarketFeeds { market } => {
+            let market_key = parse_pubkey(&market)?;
+            let market_wrapper = client.read_client().get_market(&market_key);
+            if let Some(mw) = market_wrapper {
+                let m = mw.market();
+                let (supply_oracle_key, collateral_oracle_key) = m.get_oracle_keys();
+                println!("=== Oracle Feeds for Market {:?} ===", market_key);
+                println!("\nSupply Oracle:");
+                println!("  Feed Account: {:?}", supply_oracle_key);
+                print_oracle_provider_info(
+                    m.supply_vault().oracle_provider().oracle_provider_ref(),
+                );
+                println!("\nCollateral Oracle:");
+                println!("  Feed Account: {:?}", collateral_oracle_key);
+                print_oracle_provider_info(
+                    m.collateral_vault()
+                        .oracle_provider()
+                        .oracle_provider_ref(),
+                );
+            } else {
+                println!("Market not found: {:?}", market_key);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_oracle_provider_info(provider: autara_lib::oracle::oracle_provider::OracleProviderRef) {
+    use autara_lib::oracle::oracle_provider::OracleProviderRef;
+    match provider {
+        OracleProviderRef::Pyth(pyth) => {
+            println!("  Type: Pyth");
+            println!("  Feed ID: 0x{}", hex::encode(pyth.feed_id));
+            println!("  Program ID: {:?}", pyth.program_id);
+        }
+        OracleProviderRef::Chaos(chaos) => {
+            println!("  Type: Chaos");
+            println!("  Feed ID: 0x{}", hex::encode(chaos.feed_id));
+            println!("  Program ID: {:?}", chaos.program_id);
+            println!("  Required Signatures: {}", chaos.required_signatures);
+        }
+    }
 }

@@ -35,6 +35,7 @@ axum = { workspace = true }
 prometheus = { workspace = true }
 futures = { workspace = true }
 apl-associated-token-account.workspace = true
+dotenvy = "*"
 
 [[bin]]
 name = "autara-cli"
