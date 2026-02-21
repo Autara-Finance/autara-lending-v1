@@ -316,9 +316,6 @@ pub async fn create_mint_and_mint_custom_amounts(
         )?);
     }
 
-    println!("ATA {}", apl_associated_token_account::ID);
-    println!("Token {}", apl_token::ID);
-
     let initialize_message = ArchMessage::new(
         &instructions,
         Some(payer),
