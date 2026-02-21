@@ -17,6 +17,12 @@ pub trait AutaraReadClient: Send + Sync {
     fn all_markets(
         &self,
     ) -> impl Iterator<Item = (Pubkey, MarketWrapper<impl Deref<Target = Market>>)>;
+    /// Like `all_markets` but falls back to unchecked oracle loading when validation fails.
+    /// Returns `(pubkey, wrapper, is_stale)` where `is_stale` is true if the oracle was loaded
+    /// without timestamp validation.
+    fn all_markets_maybe_stale(
+        &self,
+    ) -> impl Iterator<Item = (Pubkey, MarketWrapper<impl Deref<Target = Market>>, bool)>;
     fn all_borrow_position(
         &self,
     ) -> impl Iterator<Item = (Pubkey, impl Deref<Target = BorrowPosition>)>;

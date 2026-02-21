@@ -6,7 +6,7 @@ use crate::{
     error::LendingResult,
     event::{DoubleMarketTransactionEvent, SingleMarketTransactionEvent},
     operation::liquidation::LiquidationResultWithBonus,
-    oracle::{oracle_price::OracleRate, oracle_provider::AccountView},
+    oracle::{oracle_price::OracleRate, oracle_provider::{AccountView, OracleLoader}},
     state::borrow_position::LiquidationResultWithCtx,
 };
 
@@ -51,6 +51,65 @@ impl<M: Deref<Target = Market>> MarketWrapper<M> {
             supply_oracle,
             collateral_oracle,
         })
+    }
+
+    /// Load oracles without timestamp validation (skips staleness and confidence checks)
+    pub fn new_unchecked<A: Deref<Target = [u8]>, B: Deref<Target = [u8]>>(
+        market: M,
+        supply_oracle: AccountView<A>,
+        collateral_oracle: AccountView<B>,
+    ) -> LendingResult<Self> {
+        let supply_oracle = market
+            .supply_vault()
+            .oracle_config()
+            .load_oracle_rate_unchecked(supply_oracle)?;
+        let collateral_oracle = market
+            .collateral_vault()
+            .oracle_config()
+            .load_oracle_rate_unchecked(collateral_oracle)?;
+        Ok(Self {
+            market,
+            supply_oracle,
+            collateral_oracle,
+        })
+    }
+
+    /// Try validated oracle loading first; fall back to unchecked if validation fails.
+    /// Returns `(wrapper, is_stale)` where `is_stale` is true when unchecked loading was used.
+    pub fn try_new_or_unchecked<A: Deref<Target = [u8]>, B: Deref<Target = [u8]>>(
+        market: M,
+        supply_oracle: AccountView<A>,
+        collateral_oracle: AccountView<B>,
+        unix_timestamp: i64,
+    ) -> LendingResult<(Self, bool)> {
+        let supply_config = market.supply_vault().oracle_config();
+        let collateral_config = market.collateral_vault().oracle_config();
+
+        let supply_unchecked = supply_config
+            .oracle_provider()
+            .load_oracle_price(supply_oracle)?;
+        let collateral_unchecked = collateral_config
+            .oracle_provider()
+            .load_oracle_price(collateral_oracle)?;
+
+        let supply_validated = supply_unchecked
+            .validate(supply_config.validation_config(), unix_timestamp);
+        let collateral_validated = collateral_unchecked
+            .validate(collateral_config.validation_config(), unix_timestamp);
+
+        let is_stale = supply_validated.is_err() || collateral_validated.is_err();
+        let supply_oracle = supply_validated.unwrap_or_else(|_| supply_unchecked.unsafe_rate());
+        let collateral_oracle =
+            collateral_validated.unwrap_or_else(|_| collateral_unchecked.unsafe_rate());
+
+        Ok((
+            Self {
+                market,
+                supply_oracle,
+                collateral_oracle,
+            },
+            is_stale,
+        ))
     }
 
     #[inline(always)]

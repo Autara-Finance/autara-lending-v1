@@ -33,14 +33,8 @@ impl Deref for AutataServerContext {
 
 #[jsonrpsee::core::async_trait]
 impl AutaraServerApiServer for AutataServerContext {
-    async fn initialize(&self, request: UserParams) -> RpcResult<TransactionToSignResponse> {
+    async fn create_account(&self, request: UserParams) -> RpcResult<TransactionToSignResponse> {
         let client = self.async_arch_client();
-        for minter in &self.minters {
-            minter
-                .mint_to(&request.user, 100_000_000_000)
-                .await
-                .internal("Failed to mint tokens")?;
-        }
         let faucet_value = client
             .call_method_with_params_raw::<_>("create_account_with_faucet", request.user)
             .await
@@ -56,11 +50,26 @@ impl AutaraServerApiServer for AutataServerContext {
         })
     }
 
+    async fn initialize(&self, request: UserParams) -> RpcResult<()> {
+        let _ = self
+            .async_arch_client()
+            .request_airdrop(request.user)
+            .await
+            .internal("Failed to aidrop")?;
+        for minter in &self.minters {
+            minter
+                .mint_to(&request.user, 100_000_000_000)
+                .await
+                .internal("Failed to mint tokens")?;
+        }
+        Ok(())
+    }
+
     async fn get_all_markets(&self) -> RpcResult<Vec<FullMarket>> {
         let markets = self
             .read_client()
-            .all_markets()
-            .map(|(id, market)| FullMarket::new_from_market(id, market.owned()))
+            .all_markets_maybe_stale()
+            .map(|(id, market, _)| FullMarket::new_from_market(id, market.owned()))
             .collect::<Vec<_>>();
         Ok(markets)
     }
@@ -176,10 +185,6 @@ impl AutaraServerApiServer for AutataServerContext {
     ) -> RpcResult<SendTransactionResponse> {
         let message =
             ArchMessage::deserialize(&request.message).internal("Failed to deserialize message")?;
-        // TODO
-        if let Some(signer) = message.get_account_key(0) {
-            let _ = self.async_arch_client().request_airdrop(*signer).await;
-        }
         let events = self
             .tx_broadcast()
             .broadcast_transaction(RuntimeTransaction {

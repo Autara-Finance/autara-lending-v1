@@ -95,6 +95,10 @@ impl OracleConfig {
         &self.oracle_provider
     }
 
+    pub fn validation_config(&self) -> &OracleValidationConfig {
+        &self.validation_config
+    }
+
     pub fn load_and_validate_oracle_rate<D: std::ops::Deref<Target = [u8]>>(
         &self,
         view: AccountView<D>,
@@ -102,6 +106,14 @@ impl OracleConfig {
     ) -> LendingResult<OracleRate> {
         let unchecked_price = self.oracle_provider.load_oracle_price(view)?;
         unchecked_price.validate(&self.validation_config, unix_timestamp)
+    }
+
+    pub fn load_oracle_rate_unchecked<D: std::ops::Deref<Target = [u8]>>(
+        &self,
+        view: AccountView<D>,
+    ) -> LendingResult<OracleRate> {
+        let unchecked_price = self.oracle_provider.load_oracle_price(view)?;
+        Ok(unchecked_price.unsafe_rate())
     }
 }
 

@@ -5,8 +5,12 @@ use crate::api::{market::FullMarket, types::*};
 #[rpc(server, client)]
 pub trait AutaraServerApi {
     /// Initialize a user account with faucet and airdrop
+    #[method(name = "create_account")]
+    async fn create_account(&self, request: UserParams) -> RpcResult<TransactionToSignResponse>;
+
+    /// Initialize a user account with faucet and airdrop
     #[method(name = "initialize")]
-    async fn initialize(&self, request: UserParams) -> RpcResult<TransactionToSignResponse>;
+    async fn initialize(&self, request: UserParams) -> RpcResult<()>;
 
     /// Get all available markets
     #[method(name = "get_all_markets")]

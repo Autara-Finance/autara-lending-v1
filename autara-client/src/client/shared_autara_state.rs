@@ -171,6 +171,22 @@ impl AutaraSharedState {
         )
         .ok()
     }
+
+    fn load_market_wrapper_maybe_stale<T: std::ops::Deref<Target = Market>>(
+        &self,
+        market: T,
+    ) -> Option<(MarketWrapper<T>, bool)> {
+        let (supply_oracle_id, collateral_oracle_id) = market.get_oracle_keys();
+        let supply_oracle = self.oracle_map.get(&supply_oracle_id)?;
+        let collateral_oracle = self.oracle_map.get(&collateral_oracle_id)?;
+        MarketWrapper::try_new_or_unchecked(
+            market,
+            supply_oracle.value().into(),
+            collateral_oracle.value().into(),
+            get_unix_timestamp(),
+        )
+        .ok()
+    }
 }
 
 impl AutaraReadClient for AutaraSharedState {
@@ -184,6 +200,17 @@ impl AutaraReadClient for AutaraSharedState {
         self.market_map.iter().filter_map(|r| {
             let key = *r.key();
             self.load_market_wrapper(r).map(|m| (key, m))
+        })
+    }
+
+    fn all_markets_maybe_stale(
+        &self,
+    ) -> impl Iterator<Item = (Pubkey, MarketWrapper<impl std::ops::Deref<Target = Market>>, bool)>
+    {
+        self.market_map.iter().filter_map(|r| {
+            let key = *r.key();
+            self.load_market_wrapper_maybe_stale(r)
+                .map(|(m, stale)| (key, m, stale))
         })
     }
 
