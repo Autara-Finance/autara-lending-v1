@@ -1,11 +1,18 @@
 use std::{ops::Deref, sync::Arc};
 
 use anyhow::Context;
-use arch_sdk::{arch_program::sanitized::ArchMessage, AsyncArchRpcClient, RuntimeTransaction};
+use arch_sdk::{
+    arch_program::{pubkey::Pubkey, sanitized::ArchMessage},
+    AsyncArchRpcClient, RuntimeTransaction,
+};
+use dashmap::DashSet;
 use jsonrpsee::{
-    core::RpcResult,
-    types::{error::INTERNAL_ERROR_CODE, ErrorObjectOwned},
-    RpcModule,
+    core::{RpcResult, SubscriptionResult},
+    types::{
+        error::{INTERNAL_ERROR_CODE, INVALID_REQUEST_CODE},
+        ErrorObjectOwned,
+    },
+    ConnectionId, PendingSubscriptionSink, RpcModule, SubscriptionMessage,
 };
 
 use crate::{
@@ -21,6 +28,7 @@ use crate::{
 pub struct AutataServerContext {
     pub client: AutaraFullClientWithoutSigner<Arc<AutaraSharedState>>,
     pub minters: Vec<TokenMinter>,
+    active_market_streams: DashSet<ConnectionId>,
 }
 
 impl Deref for AutataServerContext {
@@ -66,13 +74,57 @@ impl AutaraServerApiServer for AutataServerContext {
         Ok(())
     }
 
-    async fn get_all_markets(&self) -> RpcResult<Vec<FullMarket>> {
-        let markets = self
+    async fn get_all_market_ids(&self) -> RpcResult<GetAllMarketsResponse> {
+        let market_ids: Vec<Pubkey> = self
             .read_client()
             .all_markets_maybe_stale()
-            .map(|(id, market, _)| FullMarket::new_from_market(id, market.owned()))
-            .collect::<Vec<_>>();
-        Ok(markets)
+            .map(|(id, _, _)| id)
+            .collect();
+        Ok(GetAllMarketsResponse { market_ids })
+    }
+
+    async fn get_market_by_id(&self, request: GetMarketRequest) -> RpcResult<Option<FullMarket>> {
+        Ok(self
+            .read_client()
+            .get_market(&request.market_id)
+            .map(|wrapper| FullMarket::new_from_market(request.market_id, wrapper.owned())))
+    }
+
+    async fn get_all_markets_streamed(
+        &self,
+        subscription_sink: PendingSubscriptionSink,
+    ) -> SubscriptionResult {
+        let conn_id = subscription_sink.connection_id();
+
+        if !self.active_market_streams.insert(conn_id) {
+            subscription_sink
+                .reject(ErrorObjectOwned::owned(
+                    INVALID_REQUEST_CODE,
+                    "A market stream is already active on this connection",
+                    None::<()>,
+                ))
+                .await;
+            return Ok(());
+        }
+
+        let result = async {
+            let sink = subscription_sink.accept().await?;
+            let markets = self
+                .read_client()
+                .all_markets_maybe_stale()
+                .map(|(id, market, _)| FullMarket::new_from_market(id, market.owned()));
+            for market in markets {
+                let msg = SubscriptionMessage::from_json(&market)?;
+                if sink.send(msg).await.is_err() {
+                    break;
+                }
+            }
+            Ok(())
+        }
+        .await;
+
+        self.active_market_streams.remove(&conn_id);
+        result
     }
 
     async fn get_user_positions(
@@ -239,6 +291,7 @@ pub async fn build_autara_server(
             BlockhashCache::new(arch_client, None).await?,
         ),
         minters,
+        active_market_streams: DashSet::new(),
     };
     Ok(context.into_rpc())
 }

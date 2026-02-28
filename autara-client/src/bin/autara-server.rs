@@ -23,6 +23,7 @@ use autara_pyth::{fetch_and_push_feeds, BTC_FEED, ETH_FEED, USDC_FEED};
 use clap::Parser;
 use jsonrpsee::server::{RpcServiceBuilder, Server};
 use serde::Deserialize;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
@@ -403,10 +404,12 @@ async fn main() -> Result<(), anyhow::Error> {
         .allow_headers(Any)
         .allow_origin(Any);
     let server = Server::builder()
+        .max_response_body_size(100 * 1024 * 1024) // 100 MB (before compression)
         .set_http_middleware(
             tower::ServiceBuilder::new()
                 .timeout(Duration::from_secs(60))
-                .layer(cors),
+                .layer(cors)
+                .layer(CompressionLayer::new()),
         )
         .set_rpc_middleware(
             RpcServiceBuilder::new().layer(autara_client::api::tracing::AutaraTraceLayer),
