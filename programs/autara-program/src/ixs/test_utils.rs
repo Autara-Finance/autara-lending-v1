@@ -39,7 +39,8 @@ impl AutaraAccounts {
             0,
         );
         global_config_data.set_nominated_admin(*nominated_admin.key);
-        let global_config = create_autara_account(Pubkey::new_unique(), global_config_data);
+        let (global_config_pda, _) = autara_lib::pda::find_global_config_pda(&crate::id());
+        let global_config = create_autara_account(global_config_pda, global_config_data);
         let curator = create_signer();
         let mut market = Market::zeroed();
         let market_pubkey = Pubkey::new_unique();

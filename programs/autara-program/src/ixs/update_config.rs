@@ -34,6 +34,10 @@ impl<'a, 'b> UpdateConfigAccounts<'a, 'b> {
     }
 
     pub fn validate(&self) -> LendingProgramResult {
+        let (expected_global_config, _) = autara_lib::pda::find_global_config_pda(&crate::id());
+        if *self.global_config.key() != expected_global_config {
+            return Err(LendingAccountValidationError::InvalidProtocolAuthority.into());
+        }
         let market = self.market.load_ref();
         if market.config().curator() != self.curator.key {
             return Err(LendingAccountValidationError::InvalidMarketAuthority.into());
@@ -61,6 +65,33 @@ mod tests {
         ];
         let accounts_iter = accounts.iter();
         UpdateConfigAccounts::from_accounts(&mut accounts_iter.into_iter()).unwrap();
+    }
+
+    #[test]
+    pub fn validate_fails_if_global_config_is_not_canonical_pda() {
+        let mut account_set = AutaraAccounts::new();
+        let spoofed_global_config_data = autara_lib::state::global_config::GlobalConfig::new(
+            *account_set.curator.key,
+            *account_set.curator.key,
+            0,
+        );
+        account_set.global_config = crate::ixs::test_utils::create_autara_account(
+            arch_program::pubkey::Pubkey::new_unique(),
+            spoofed_global_config_data,
+        );
+        let accounts = [
+            account_set.market.clone(),
+            account_set.global_config.clone(),
+            account_set.curator.clone(),
+            account_set.oracle.clone(),
+            account_set.oracle.clone(),
+        ];
+        let accounts_iter = accounts.iter();
+        let result = UpdateConfigAccounts::from_accounts(&mut accounts_iter.into_iter());
+        let Err(err) = result else {
+            panic!("Expected an error, but got Ok");
+        };
+        assert_eq!(err, LendingAccountValidationError::InvalidProtocolAuthority);
     }
 
     #[test]
