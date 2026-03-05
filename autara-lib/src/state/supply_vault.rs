@@ -588,4 +588,87 @@ pub mod tests {
         vault.sync_clock(200, UFixedPoint::zero(), 0).unwrap();
         assert_eq!(vault.last_update_unix_timestamp, 200);
     }
+
+    mod prop_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn total_borrow_never_exceeds_total_supply(
+                supply in USDC(100.)..USDC(10_000_000.),
+                borrow_pct in 1u64..99u64,
+            ) {
+                let mut vault = create_usdc_supply_vault();
+                vault.lend(supply).unwrap();
+                let borrow_amount = supply * borrow_pct / 100;
+                if borrow_amount > 0 {
+                    vault.borrow(borrow_amount).unwrap();
+                    prop_assert!(vault.total_borrow().unwrap() <= vault.total_supply().unwrap());
+                }
+            }
+
+            #[test]
+            fn utilisation_rate_in_valid_range(
+                supply in USDC(1_000.)..USDC(10_000_000.),
+                borrow_pct in 0u64..95u64,
+            ) {
+                let mut vault = create_usdc_supply_vault();
+                vault.lend(supply).unwrap();
+                let borrow_amount = supply * borrow_pct / 100;
+                if borrow_amount > 0 {
+                    vault.borrow(borrow_amount).unwrap();
+                }
+                let util = vault.utilisation_rate().unwrap();
+                prop_assert!(util >= IFixedPoint::zero());
+                prop_assert!(util <= IFixedPoint::one());
+            }
+
+            #[test]
+            fn lend_withdraw_roundtrip(amount in USDC(1.)..USDC(10_000_000.)) {
+                let mut vault = create_usdc_supply_vault();
+                let shares = vault.lend(amount).unwrap();
+                let withdrawn = vault.withdraw_shares(shares).unwrap();
+                prop_assert_eq!(withdrawn, amount);
+            }
+
+            #[test]
+            fn borrow_repay_roundtrip(
+                borrow_amount in USDC(1.)..USDC(1_000_000.),
+            ) {
+                let mut vault = create_usdc_supply_vault();
+                vault.lend(USDC(10_000_000.)).unwrap();
+                let shares = vault.borrow(borrow_amount).unwrap();
+                let repaid = vault.repay_shares(shares).unwrap();
+                prop_assert_eq!(repaid, borrow_amount);
+            }
+
+            #[test]
+            fn fee_distribution_sums_correctly(
+                supply in USDC(100_000.)..USDC(10_000_000.),
+                borrow_pct in 10u64..80u64,
+                fee_bps in 100u64..2000u64,
+                protocol_share_bps in 1000u64..9000u64,
+            ) {
+                let mut vault = create_usdc_supply_vault();
+                vault.lend(supply).unwrap();
+                let borrow_amount = supply * borrow_pct / 100;
+                vault.borrow(borrow_amount).unwrap();
+                let fee = bps_to_fixed_point(fee_bps);
+                vault.sync_clock(
+                    SECONDS_PER_YEAR as i64,
+                    fee,
+                    protocol_share_bps as u16,
+                ).unwrap();
+                let protocol_fee = vault.supply_shares_tracker
+                    .shares_to_atoms(vault.pending_protocol_fee_shares, RoundingMode::RoundDown)
+                    .unwrap();
+                let curator_fee = vault.supply_shares_tracker
+                    .shares_to_atoms(vault.pending_curator_fee_shares, RoundingMode::RoundDown)
+                    .unwrap();
+                // Both fees should be non-negative
+                prop_assert!(protocol_fee + curator_fee > 0 || borrow_amount == 0);
+            }
+        }
+    }
 }

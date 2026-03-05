@@ -28,10 +28,9 @@ impl<'a, 'b> UpdateGlobalConfigAccounts<'a, 'b> {
     }
 
     pub fn validate(&self) -> LendingProgramResult {
-        if !self
-            .global_config
-            .load_ref()
-            .can_update_config(self.signer.key)
+        let config = self.global_config.load_ref();
+        if !config.can_update_config(self.signer.key)
+            && !config.can_upgrade_nomination(self.signer.key)
         {
             return Err(LendingAccountValidationError::InvalidProtocolAuthority.into());
         }

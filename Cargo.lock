@@ -305,6 +305,7 @@ dependencies = [
  "bytemuck",
  "fixed",
  "num_enum",
+ "proptest",
  "serde",
  "serde_with",
  "thiserror 2.0.18",

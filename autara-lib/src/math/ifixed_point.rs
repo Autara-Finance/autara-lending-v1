@@ -235,4 +235,29 @@ pub mod tests {
             LendingError::DivisionOverflow
         );
     }
+
+    mod prop_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn rounding_consistency_positive(val in 1u64..u64::MAX / 2) {
+                let x = IFixedPoint::from_u64(val);
+                let with_frac = x.safe_add(IFixedPoint::lit("0.5")).unwrap();
+                let down = with_frac.as_u64_rounded_down().unwrap();
+                let up = with_frac.as_u64_rounded_up().unwrap();
+                prop_assert!(up >= down);
+                prop_assert!(up - down <= 1);
+            }
+
+            #[test]
+            fn negative_to_u64_always_fails(val in 1i64..i64::MAX) {
+                let neg = IFixedPoint::from_i64(-val);
+                prop_assert!(neg.as_u64_rounded_down().is_err());
+                prop_assert!(neg.as_u64_rounded_up().is_err());
+            }
+
+        }
+    }
 }

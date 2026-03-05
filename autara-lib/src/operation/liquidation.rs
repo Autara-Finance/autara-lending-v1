@@ -466,4 +466,120 @@ pub mod tests {
             original.collateral_atoms_to_liquidate
         );
     }
+
+    mod prop_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn liquidation_setup() -> LiquidationSetup {
+            LiquidationSetup::new()
+        }
+
+        proptest! {
+            #[test]
+            fn liquidation_always_reduces_ltv(
+                borrowed_usdc in 60_000u64..95_000u64,
+            ) {
+                let setup = liquidation_setup();
+                let borrowed_atoms = USDC(borrowed_usdc as f64);
+                let collateral_atoms = BTC(1.);
+                let ltv_before = setup.calculate_ltv(borrowed_atoms, collateral_atoms);
+                if ltv_before > setup.desired_ltv {
+                    let result = compute_liquidation(
+                        borrowed_atoms,
+                        setup.borrow_decimals,
+                        &setup.supply_oracle,
+                        collateral_atoms,
+                        setup.collateral_decimals,
+                        &setup.collateral_oracle,
+                        setup.desired_ltv,
+                    ).unwrap();
+                    if result.borrowed_atoms_to_repay > 0 {
+                        let ltv_after = setup.calculate_ltv_after_liquidation(
+                            borrowed_atoms, collateral_atoms,
+                            result.borrowed_atoms_to_repay, result.collateral_atoms_to_liquidate, 0,
+                        );
+                        prop_assert!(ltv_after < ltv_before);
+                    }
+                }
+            }
+
+            #[test]
+            fn max_repay_always_respected(
+                borrowed_usdc in 60_000u64..90_000u64,
+                max_repay_usdc in 1_000u64..50_000u64,
+            ) {
+                let setup = liquidation_setup();
+                let borrowed_atoms = USDC(borrowed_usdc as f64);
+                let collateral_atoms = BTC(1.);
+                let max_repay = USDC(max_repay_usdc as f64);
+                let fee = IFixedPoint::lit("0.05");
+                let result = compute_liquidation_with_fee(
+                    borrowed_atoms, setup.borrow_decimals, &setup.supply_oracle,
+                    collateral_atoms, setup.collateral_decimals, &setup.collateral_oracle,
+                    setup.desired_ltv, fee, max_repay,
+                ).unwrap();
+                prop_assert!(result.borrowed_atoms_to_repay <= max_repay);
+            }
+
+            #[test]
+            fn total_collateral_liquidated_never_exceeds_available(
+                borrowed_usdc in 50_000u64..99_000u64,
+                fee_thousandths in 1u64..100u64,
+            ) {
+                let setup = liquidation_setup();
+                let borrowed_atoms = USDC(borrowed_usdc as f64);
+                let collateral_atoms = BTC(1.);
+                let fee = IFixedPoint::from_ratio(fee_thousandths, 1000).unwrap();
+                if fee <= IFixedPoint::lit("0.1") && fee >= IFixedPoint::lit("0.001") {
+                    let result = compute_liquidation_with_fee(
+                        borrowed_atoms, setup.borrow_decimals, &setup.supply_oracle,
+                        collateral_atoms, setup.collateral_decimals, &setup.collateral_oracle,
+                        setup.desired_ltv, fee, u64::MAX,
+                    ).unwrap();
+                    prop_assert!(result.total_collateral_atoms_to_liquidate().unwrap() <= collateral_atoms);
+                }
+            }
+
+            #[test]
+            fn adjust_for_max_repay_preserves_ratio(
+                repay in 1_000u64..1_000_000u64,
+                collateral in 500u64..500_000u64,
+                bonus in 10u64..50_000u64,
+                max_repay_pct in 10u64..90u64,
+            ) {
+                let mut result = LiquidationResultWithBonus {
+                    borrowed_atoms_to_repay: repay,
+                    collateral_atoms_to_liquidate: collateral,
+                    collateral_atoms_liquidation_bonus: bonus,
+                };
+                let ratio_before = collateral as f64 / repay as f64;
+                let max_repay = repay * max_repay_pct / 100;
+                if max_repay > 0 {
+                    result.adjust_for_max_repay(max_repay);
+                    prop_assert!(result.borrowed_atoms_to_repay <= max_repay);
+                    if result.borrowed_atoms_to_repay > 0 {
+                        let ratio_after = result.collateral_atoms_to_liquidate as f64 / result.borrowed_atoms_to_repay as f64;
+                        prop_assert!((ratio_before - ratio_after).abs() < 0.01);
+                    }
+                }
+            }
+
+            #[test]
+            fn repay_never_exceeds_borrowed(
+                borrowed_usdc in 60_000u64..95_000u64,
+            ) {
+                let setup = liquidation_setup();
+                let borrowed_atoms = USDC(borrowed_usdc as f64);
+                let collateral_atoms = BTC(1.);
+                let fee = IFixedPoint::lit("0.05");
+                let result = compute_liquidation_with_fee(
+                    borrowed_atoms, setup.borrow_decimals, &setup.supply_oracle,
+                    collateral_atoms, setup.collateral_decimals, &setup.collateral_oracle,
+                    setup.desired_ltv, fee, u64::MAX,
+                ).unwrap();
+                prop_assert!(result.borrowed_atoms_to_repay <= borrowed_atoms);
+            }
+        }
+    }
 }

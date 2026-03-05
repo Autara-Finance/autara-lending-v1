@@ -101,4 +101,30 @@ pub mod tests {
             LendingError::DivisionOverflow
         );
     }
+
+    mod prop_tests {
+        use super::*;
+        use crate::math::ifixed_point::IFixedPoint;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn rounding_consistency(bits in 1u128..u64::MAX as u128) {
+                let x = UFixedPoint::from_bits(bits);
+                let down = x.as_u64_rounded_down();
+                let up = x.as_u64_rounded_up();
+                if let (Ok(d), Ok(u)) = (down, up) {
+                    prop_assert!(u >= d);
+                    prop_assert!(u - d <= 1);
+                }
+            }
+
+            #[test]
+            fn negative_ifixed_conversion_always_fails(val in 1i64..i64::MAX) {
+                let neg = IFixedPoint::from_i64(-val);
+                prop_assert!(UFixedPoint::try_from(neg).is_err());
+            }
+
+        }
+    }
 }

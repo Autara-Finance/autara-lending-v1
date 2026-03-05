@@ -84,11 +84,15 @@ impl GlobalConfig {
     }
 
     pub fn can_update_config(&self, key: &Pubkey) -> bool {
-        &self.admin == key || self.nominated_admin.as_ref().is_some_and(|n| n == key)
+        &self.admin == key
     }
 
-    pub fn update_protocol_fee_share_in_bps(&mut self, new_fee: u16) {
+    pub fn update_protocol_fee_share_in_bps(&mut self, new_fee: u16) -> LendingResult {
+        if new_fee > 10_000 {
+            return Err(LendingError::FeeTooHigh.into());
+        }
         self.protocol_fee_share_in_bps = new_fee;
+        Ok(())
     }
 
     pub fn protocol_fee_share_in_bps(&self) -> u16 {
@@ -121,15 +125,21 @@ pub mod tests {
         assert!(!config.can_update_config(&fee_receiver));
 
         config.set_fee_receiver(Pubkey::new_unique());
-        config.update_protocol_fee_share_in_bps(1500);
+        config.update_protocol_fee_share_in_bps(1500).unwrap();
 
         assert_ne!(config.fee_receiver(), &fee_receiver);
         assert_eq!(config.protocol_fee_share_in_bps(), 1500);
 
+        // Fee above 100% (10_000 bps) should fail
+        assert!(config.update_protocol_fee_share_in_bps(10_001).is_err());
+        assert_eq!(config.protocol_fee_share_in_bps(), 1500); // unchanged
+
         let nominated_admin = Pubkey::new_unique();
         config.set_nominated_admin(nominated_admin);
-        assert!(config.can_update_config(&nominated_admin));
+        // Nominated admin should NOT have config privileges before accepting
+        assert!(!config.can_update_config(&nominated_admin));
         assert!(!config.can_update_config(&Pubkey::new_unique()));
+        // But can upgrade nomination
         assert!(config.can_upgrade_nomination(&nominated_admin));
         assert!(!config.can_upgrade_nomination(&admin));
 
