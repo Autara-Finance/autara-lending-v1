@@ -87,6 +87,7 @@ pub enum LendingError {
     OracleRateRelativeConfidenceTooLow,
     NegativeOracleRate,
     OracleRateIsNull,
+    OracleConfidenceExceedsRate,
     LiquidationDidNotMeetRequirements,
     FeeTooHigh,
     SharesOverflow,

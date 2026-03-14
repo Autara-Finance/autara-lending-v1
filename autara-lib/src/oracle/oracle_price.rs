@@ -26,7 +26,12 @@ pub struct OracleRate {
 
 impl OracleRate {
     pub fn new(rate: IFixedPoint, confidence: IFixedPoint) -> Self {
-        Self { rate, confidence }
+        Self::try_new(rate, confidence).expect("OracleRate: rate must be > 0 and confidence < rate")
+    }
+
+    pub fn try_new(rate: IFixedPoint, confidence: IFixedPoint) -> LendingResult<Self> {
+        Self::validate(rate, confidence)?;
+        Ok(Self { rate, confidence })
     }
 
     pub fn try_from_price_expo_conf(price: u64, confidence: u64, expo: i8) -> LendingResult<Self> {
@@ -41,7 +46,20 @@ impl OracleRate {
         };
         let rate = scale(IFixedPoint::from(price))?;
         let confidence = scale(IFixedPoint::from(confidence))?;
-        Ok(Self { rate, confidence })
+        Self::try_new(rate, confidence)
+    }
+
+    fn validate(rate: IFixedPoint, confidence: IFixedPoint) -> LendingResult {
+        if rate.is_negative() || rate.is_zero() {
+            return Err(LendingError::OracleRateIsNull.into());
+        }
+        if confidence.is_negative() {
+            return Err(LendingError::NegativeOracleRate.into());
+        }
+        if confidence >= rate {
+            return Err(LendingError::OracleConfidenceExceedsRate.into());
+        }
+        Ok(())
     }
 
     pub fn rate(&self) -> IFixedPoint {

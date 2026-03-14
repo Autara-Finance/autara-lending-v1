@@ -230,21 +230,15 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_negative_rate() {
-        let rate = OracleRate::new(IFixedPoint::lit("-1.5"), IFixedPoint::lit("0.01"));
-        let oracle_rate = UncheckedOracleRate::new(rate, 100);
-        let config = OracleValidationConfig::new(60, 0.05.into());
-        let result = oracle_rate.validate(&config, 120);
+    fn test_reject_negative_rate_at_construction() {
+        let result = OracleRate::try_new(IFixedPoint::lit("-1.5"), IFixedPoint::lit("0.01"));
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), LendingError::NegativeOracleRate);
+        assert_eq!(result.unwrap_err(), LendingError::OracleRateIsNull);
     }
 
     #[test]
-    fn test_validate_negative_confidence() {
-        let rate = OracleRate::new(IFixedPoint::lit("1.5"), IFixedPoint::lit("-0.01"));
-        let oracle_rate = UncheckedOracleRate::new(rate, 100);
-        let config = OracleValidationConfig::new(60, 0.05.into());
-        let result = oracle_rate.validate(&config, 120);
+    fn test_reject_negative_confidence_at_construction() {
+        let result = OracleRate::try_new(IFixedPoint::lit("1.5"), IFixedPoint::lit("-0.01"));
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), LendingError::NegativeOracleRate);
     }

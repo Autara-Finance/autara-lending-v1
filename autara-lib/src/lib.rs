@@ -13,3 +13,6 @@ pub mod pda;
 pub mod pod_option;
 pub mod state;
 pub mod token;
+
+#[cfg(test)]
+mod safety_tests;
