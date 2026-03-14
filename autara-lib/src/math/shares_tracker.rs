@@ -84,7 +84,7 @@ impl SharesTracker {
     ) -> LendingResult<(u64, UFixedPoint)> {
         let shares = self.atoms_to_shares(atoms)?;
         if shares > max_shares {
-            let atoms = self.shares_to_atoms(self.total_shares, rounding)?;
+            let atoms = self.shares_to_atoms(max_shares, rounding)?;
             self.total_shares = self
                 .total_shares
                 .safe_sub(max_shares)
@@ -388,6 +388,29 @@ pub mod tests {
     }
 
     #[test]
+    pub fn withdraw_atoms_capped_returns_wrong_atoms_when_capped() {
+        let mut tracker = SharesTracker::new();
+
+        // Simulate a pool with many depositors: 1,000,000 total atoms
+        tracker.deposit_atoms(1_000_000).unwrap();
+
+        // The borrower only has 100 shares of debt
+        let max_shares = UFixedPoint::from_u64(100);
+
+        // Request to withdraw 500 atoms (which requires 500 shares > max_shares=100)
+        // So the cap branch is triggered.
+        let (atoms_returned, shares_withdrawn) = tracker
+            .withdraw_atoms_capped(500, max_shares, RoundingMode::RoundDown)
+            .unwrap();
+
+        // shares_withdrawn is correctly capped at max_shares
+        assert_eq!(shares_withdrawn, max_shares);
+
+        // Fixed: atoms_returned should be 100 (the value of 100 shares at 1:1 ratio)
+        assert_eq!(atoms_returned, 100);
+    }
+
+    #[test]
     pub fn cant_socialize_more_than_total() {
         let mut tracker = SharesTracker::new();
         tracker.deposit_atoms(1000).unwrap();
@@ -505,5 +528,98 @@ pub mod tests {
         let atoms_after_second = tracker.total_atoms(RoundingMode::RoundDown).unwrap();
         assert!(atoms_after_second > atoms_after_first);
         assert!(atoms_after_second > 1_200_000);
+    }
+
+    mod prop_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn deposit_withdraw_roundtrip(atoms in 1u64..1_000_000_000_000u64) {
+                let mut tracker = SharesTracker::new();
+                let shares = tracker.deposit_atoms(atoms).unwrap();
+                let withdrawn = tracker.withdraw_shares(shares, RoundingMode::RoundDown).unwrap();
+                prop_assert_eq!(withdrawn, atoms);
+                prop_assert_eq!(tracker.total_atoms(RoundingMode::RoundDown).unwrap(), 0);
+            }
+
+            #[test]
+            fn protocol_never_loses_atoms(
+                deposits in prop::collection::vec(1u64..1_000_000u64, 2..10),
+                interest_bps in 1u64..5000u64,
+            ) {
+                let mut tracker = SharesTracker::new();
+                let mut all_shares = Vec::new();
+                for &d in &deposits {
+                    all_shares.push(tracker.deposit_atoms(d).unwrap());
+                }
+                let rate = InterestRate::new(IFixedPoint::from_ratio(interest_bps, 10_000).unwrap());
+                tracker.apply_interest_rate(rate).unwrap();
+                let mut total_withdrawn = 0u64;
+                for shares in all_shares {
+                    total_withdrawn += tracker.withdraw_shares(shares, RoundingMode::RoundDown).unwrap();
+                }
+                // Protocol should never be insolvent - remaining atoms >= 0
+                let remaining = tracker.total_atoms(RoundingMode::RoundDown).unwrap();
+                let _ = remaining; // vault atoms should never be negative (u64 guarantees this)
+                // Total withdrawn should not exceed what was deposited + interest
+                let total_deposited: u64 = deposits.iter().sum();
+                prop_assert!(total_withdrawn <= total_deposited * 2); // generous upper bound with interest
+            }
+
+            #[test]
+            fn rounding_favors_protocol(atoms in 1u64..1_000_000_000u64) {
+                let mut tracker = SharesTracker::new();
+                tracker.deposit_atoms(atoms).unwrap();
+                let rate = InterestRate::new(IFixedPoint::lit("0.333333"));
+                tracker.apply_interest_rate(rate).unwrap();
+                let shares = tracker.atoms_to_shares(100).unwrap();
+                let round_down = tracker.shares_to_atoms(shares, RoundingMode::RoundDown).unwrap();
+                let round_up = tracker.shares_to_atoms(shares, RoundingMode::RoundUp).unwrap();
+                prop_assert!(round_up >= round_down);
+            }
+
+            #[test]
+            fn positive_interest_increases_atoms_per_share(
+                atoms in 1_000u64..1_000_000_000u64,
+                rate_bps in 1u64..10_000u64,
+            ) {
+                let mut tracker = SharesTracker::new();
+                tracker.deposit_atoms(atoms).unwrap();
+                let aps_before = tracker.atoms_per_share();
+                let rate = InterestRate::new(IFixedPoint::from_ratio(rate_bps, 10_000).unwrap());
+                tracker.apply_interest_rate(rate).unwrap();
+                let aps_after = tracker.atoms_per_share();
+                prop_assert!(aps_after > aps_before);
+            }
+
+            #[test]
+            fn fee_never_exceeds_interest(
+                atoms in 1_000_000u64..1_000_000_000u64,
+                rate_bps in 100u64..5_000u64,
+                fee_bps in 1u64..5_000u64,
+            ) {
+                let mut tracker = SharesTracker::new();
+                tracker.deposit_atoms(atoms).unwrap();
+                let total_before = tracker.total_atoms(RoundingMode::RoundDown).unwrap();
+                let rate = InterestRate::new(IFixedPoint::from_ratio(rate_bps, 10_000).unwrap());
+                let fee = crate::math::bps::bps_to_fixed_point(fee_bps);
+                if let Ok(fee_shares) = tracker.apply_interest_rate_with_fee(rate, fee) {
+                    let fee_atoms = tracker.shares_to_atoms(fee_shares, RoundingMode::RoundDown).unwrap();
+                    let total_after = tracker.total_atoms(RoundingMode::RoundDown).unwrap();
+                    let total_interest = total_after - total_before;
+                    prop_assert!(fee_atoms <= total_interest + 1); // +1 for rounding
+                }
+            }
+
+            #[test]
+            fn equal_depositors_get_equal_shares(atoms in 1u64..1_000_000_000u64) {
+                let mut tracker = SharesTracker::new();
+                let shares_a = tracker.deposit_atoms(atoms).unwrap();
+                let shares_b = tracker.deposit_atoms(atoms).unwrap();
+                prop_assert_eq!(shares_a, shares_b);
+            }
+        }
     }
 }

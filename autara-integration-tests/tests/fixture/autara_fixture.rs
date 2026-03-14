@@ -33,7 +33,7 @@ pub const MAX_UTILISATION_RATE: IFixedPoint = IFixedPoint::from_i64_u64_ratio(9,
 
 impl AutaraFixture {
     pub async fn new() -> Self {
-        let config = ArchConfig::dev();
+        let config = ArchConfig::testnet();
         let arch_client = config.arch_rpc_client();
         let admin = autara_stage_admin();
         let env = AutaraTestEnv::new(

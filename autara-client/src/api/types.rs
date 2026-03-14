@@ -259,6 +259,20 @@ pub struct WithdrawAndRepayRequest {
     pub params: WithdrawRepayAplInstruction,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetAllMarketsResponse {
+    #[serde(with = "serde_pubkey_vec")]
+    pub market_ids: Vec<Pubkey>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetMarketRequest {
+    #[serde(with = "serde_pubkey")]
+    pub market_id: Pubkey,
+}
+
 pub struct BuildTxTracingParams<'a> {
     pub instruction: &'static str,
     pub user: &'a Pubkey,

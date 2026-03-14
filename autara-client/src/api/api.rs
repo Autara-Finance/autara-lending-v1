@@ -1,4 +1,4 @@
-use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+use jsonrpsee::{core::RpcResult, core::SubscriptionResult, proc_macros::rpc};
 
 use crate::api::{market::FullMarket, types::*};
 
@@ -12,9 +12,17 @@ pub trait AutaraServerApi {
     #[method(name = "initialize")]
     async fn initialize(&self, request: UserParams) -> RpcResult<()>;
 
-    /// Get all available markets
-    #[method(name = "get_all_markets")]
-    async fn get_all_markets(&self) -> RpcResult<Vec<FullMarket>>;
+    /// Get all market IDs
+    #[method(name = "get_all_market_ids")]
+    async fn get_all_market_ids(&self) -> RpcResult<GetAllMarketsResponse>;
+
+    /// Get a single market by ID
+    #[method(name = "get_market_by_id")]
+    async fn get_market_by_id(&self, request: GetMarketRequest) -> RpcResult<Option<FullMarket>>;
+
+    /// Get all markets streamed one by one over WebSocket (one-shot, not a live feed)
+    #[subscription(name = "get_all_markets_streamed" => "market", unsubscribe = "unsubscribe_all_markets_streamed", item = FullMarket)]
+    async fn get_all_markets_streamed(&self) -> SubscriptionResult;
 
     /// Get user positions for a specific user
     #[method(name = "get_user_positions")]

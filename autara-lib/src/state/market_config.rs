@@ -46,7 +46,7 @@ pub struct MarketConfig {
 pub const MAX_LTV_WITH_LIQUIDATION_BONUS: IFixedPoint = IFixedPoint::lit("0.99");
 pub const MAX_LIQUIDATION_BONUS: IFixedPoint = IFixedPoint::lit("0.1");
 pub const MIN_LIQUIDATION_BONUS: IFixedPoint = IFixedPoint::lit("0.001");
-pub const MAX_UTILISATION_RATE: IFixedPoint = IFixedPoint::lit("99");
+pub const MAX_UTILISATION_RATE: IFixedPoint = IFixedPoint::lit("0.99");
 pub const MAX_LENDING_MARKET_FEE_IN_BPS: u16 = percent_to_bps(20) as u16;
 pub const FEE_PERCENT_FOR_PROTOCOL_IN_BPS: u16 = percent_to_bps(50) as u16;
 
@@ -444,7 +444,9 @@ pub mod tests {
 
         // Change the protocol fee share in global config
         let new_fee = percent_to_bps(15) as u16;
-        global_config.update_protocol_fee_share_in_bps(new_fee);
+        global_config
+            .update_protocol_fee_share_in_bps(new_fee)
+            .unwrap();
 
         market_config.sync_global_config(&global_config);
         assert_eq!(market_config.protocol_fee_in_bps(), new_fee);

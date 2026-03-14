@@ -1,6 +1,9 @@
 use autara_lib::{error::LendingError, ixs::UpdateGlobalConfigInstruction};
 
-use crate::{error::LendingProgramResult, ixs::UpdateGlobalConfigAccounts};
+use crate::{
+    error::{LendingAccountValidationError, LendingProgramResult},
+    ixs::UpdateGlobalConfigAccounts,
+};
 
 pub fn process_update_global_config(
     accounts: &UpdateGlobalConfigAccounts,
@@ -14,8 +17,11 @@ pub fn process_update_global_config(
             return Err(LendingError::InvalidNomination.into());
         }
     }
+    if !global_config.can_update_config(accounts.signer.key) {
+        return Err(LendingAccountValidationError::InvalidProtocolAuthority.into());
+    }
     if let Some(protocol_fee_share_in_bps) = instruction.protocol_fee_share_in_bps {
-        global_config.update_protocol_fee_share_in_bps(protocol_fee_share_in_bps);
+        global_config.update_protocol_fee_share_in_bps(protocol_fee_share_in_bps)?;
     }
     if let Some(fee_receiver) = instruction.fee_receiver {
         global_config.set_fee_receiver(fee_receiver);

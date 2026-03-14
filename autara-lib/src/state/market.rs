@@ -1364,4 +1364,84 @@ pub mod tests {
             LendingError::MaxLtvReached
         );
     }
+
+    mod prop_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn borrow_always_respects_max_ltv(
+                collateral_btc in 1u64..100u64,
+                borrow_pct in 1u64..70u64,
+            ) {
+                let mut market = create_btc_usdc_market();
+                let mut borrow_position = BorrowPosition::default();
+                let collateral_oracle = default_btc_oracle_rate();
+                let supply_oracle = default_usd_oracle_rate();
+                let collateral = BTC(collateral_btc as f64);
+                market.deposit_collateral(&mut borrow_position, collateral).unwrap();
+                let collateral_value = collateral_oracle
+                    .collateral_value(collateral, market.collateral_vault.mint_decimals())
+                    .unwrap();
+                let max_ltv = market.config().ltv_config().max_ltv;
+                let borrow_amount = (collateral_value.to_float() * borrow_pct as f64 / 100.0) as u64;
+                if borrow_amount > 0 && borrow_amount < INITIAL_USDC_DEPOSIT {
+                    if market.borrow(&mut borrow_position, borrow_amount, &supply_oracle, &collateral_oracle).is_ok() {
+                        let health = market.borrow_position_health(&borrow_position, &collateral_oracle, &supply_oracle).unwrap();
+                        prop_assert!(health.ltv <= max_ltv);
+                    }
+                }
+            }
+
+            #[test]
+            fn borrow_respects_utilisation_cap(
+                collateral_btc in 10u64..500u64,
+                borrow_pct in 50u64..99u64,
+            ) {
+                let mut market = create_btc_usdc_market();
+                let mut borrow_position = BorrowPosition::default();
+                let collateral_oracle = default_btc_oracle_rate();
+                let supply_oracle = default_usd_oracle_rate();
+                market.deposit_collateral(&mut borrow_position, BTC(collateral_btc as f64)).unwrap();
+                let borrow_amount = INITIAL_USDC_DEPOSIT * borrow_pct / 100;
+                if market.borrow(&mut borrow_position, borrow_amount, &supply_oracle, &collateral_oracle).is_ok() {
+                    let util = market.supply_vault.utilisation_rate().unwrap();
+                    prop_assert!(util <= market.config().max_utilisation_rate());
+                }
+            }
+
+            #[test]
+            fn collateral_withdrawal_respects_ltv(
+                withdraw_pct in 1u64..90u64,
+            ) {
+                let mut market = create_btc_usdc_market();
+                let mut borrow_position = BorrowPosition::default();
+                let collateral_oracle = default_btc_oracle_rate();
+                let supply_oracle = default_usd_oracle_rate();
+                market.deposit_collateral(&mut borrow_position, BTC(1.)).unwrap();
+                market.borrow(&mut borrow_position, USDC(10_000.), &supply_oracle, &collateral_oracle).unwrap();
+                let withdraw_amount = BTC(1.) * withdraw_pct / 100;
+                if market.withdraw_collateral(&mut borrow_position, withdraw_amount, &collateral_oracle, &supply_oracle).is_ok() {
+                    let health = market.borrow_position_health(&borrow_position, &collateral_oracle, &supply_oracle).unwrap();
+                    prop_assert!(health.ltv <= market.config().ltv_config().max_ltv);
+                }
+            }
+
+            #[test]
+            fn repay_always_succeeds(
+                repay_pct in 1u64..100u64,
+            ) {
+                let mut market = create_btc_usdc_market();
+                let mut borrow_position = BorrowPosition::default();
+                let collateral_oracle = default_btc_oracle_rate();
+                let supply_oracle = default_usd_oracle_rate();
+                market.deposit_collateral(&mut borrow_position, BTC(1.)).unwrap();
+                market.borrow(&mut borrow_position, USDC(50_000.), &supply_oracle, &collateral_oracle).unwrap();
+                let repay_amount = USDC(50_000.) * repay_pct / 100;
+                // Repay should always succeed for amounts <= borrowed
+                prop_assert!(market.repay(&mut borrow_position, repay_amount).is_ok());
+            }
+        }
+    }
 }

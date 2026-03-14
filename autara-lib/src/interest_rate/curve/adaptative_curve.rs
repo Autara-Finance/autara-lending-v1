@@ -10,6 +10,16 @@ use crate::{
 };
 
 /// Autara rust version of the AdaptiveCurveIrm used in [Morpho](https://github.com/morpho-org/morpho-blue-irm/blob/main/src/adaptive-curve-irm/AdaptiveCurveIrm.sol)
+///
+/// NOTE :
+/// If a market using this curve stays at extreme
+/// utilization (near 100%) and no transaction calls `sync_clock` for ~1.1+ years, the
+/// `linear_adaptation` value can exceed the domain of `checked_exp()` (~55.26), causing
+/// `new_rate_at_target` to permanently fail. Because `last_update_unix_timestamp` is only
+/// advanced on success, subsequent calls accumulate even larger elapsed times and also fail.
+/// In practice this is extremely unlikely since any supply/borrow/repay/liquidation triggers
+/// `sync_clock`, and the market would need to be completely idle at >90% utilization for over
+/// a year. A PoC test exists in `state/mod.rs::poc_adaptive_curve_can_perma_brick_market_after_long_idle`.
 #[repr(C)]
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Pod, Zeroable, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(

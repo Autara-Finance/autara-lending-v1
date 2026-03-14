@@ -26,3 +26,6 @@ tracing = { workspace = true, optional = true  }
 serde = { workspace = true, optional = true }
 serde_with = {  workspace = true, optional = true }
 arch_sdk = { workspace = true, optional = true  }
+
+[dev-dependencies]
+proptest = { workspace = true }
