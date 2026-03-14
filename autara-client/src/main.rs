@@ -36,7 +36,6 @@ async fn main() -> Result<(), AutaraClientError> {
         arch_client,
         Network::Testnet,
         test_env.autara_program_pubkey,
-        test_env.autara_oracle_program_pubkey,
         test_env.user_keypair,
     );
 

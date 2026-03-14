@@ -237,7 +237,6 @@ async fn main() -> Result<(), anyhow::Error> {
         arch_client.clone(),
         network,
         autara_program_id,
-        oracle_program_id,
         signer_keypair,
     );
 
@@ -394,7 +393,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Start the shared state (auto-reloading)
     let autara_state =
-        AutaraSharedState::new(arch_client.clone(), autara_program_id, oracle_program_id)
+        AutaraSharedState::new(arch_client.clone(), autara_program_id)
             .spawn()
             .0;
 

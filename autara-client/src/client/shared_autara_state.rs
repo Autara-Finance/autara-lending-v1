@@ -13,7 +13,6 @@ use autara_lib::{
     },
 };
 use dashmap::DashMap;
-use futures::FutureExt;
 
 use crate::{
     client::{read::AutaraReadClient, single_thread_client::get_unix_timestamp},
@@ -24,7 +23,6 @@ use crate::{
 pub struct AutaraSharedState {
     arch_client: AsyncArchRpcClient,
     autara_program_id: Pubkey,
-    oracle_program_id: Pubkey,
     market_map: DashMap<Pubkey, Market>,
     supply_position_map: DashMap<Pubkey, SupplyPosition>,
     borrow_position_map: DashMap<Pubkey, BorrowPosition>,
@@ -34,15 +32,10 @@ pub struct AutaraSharedState {
 }
 
 impl AutaraSharedState {
-    pub fn new(
-        arch_client: AsyncArchRpcClient,
-        autara_program_id: Pubkey,
-        oracle_program_id: Pubkey,
-    ) -> Self {
+    pub fn new(arch_client: AsyncArchRpcClient, autara_program_id: Pubkey) -> Self {
         Self {
             arch_client,
             autara_program_id,
-            oracle_program_id,
             market_map: DashMap::new(),
             supply_position_map: DashMap::new(),
             borrow_position_map: DashMap::new(),
@@ -78,10 +71,7 @@ impl AutaraSharedState {
 
     pub async fn reload(&self) -> anyhow::Result<()> {
         let global_pda = find_global_config_pda(&self.autara_program_id).0;
-        let (oracles, supply, borrow, market, global_config) = tokio::try_join!(
-            self.arch_client
-                .get_program_accounts(&self.oracle_program_id, None)
-                .map(|result| result.context("failed to fetch oracles")),
+        let (supply, borrow, markets, global_config) = tokio::try_join!(
             self.arch_client.get_program_accounts_pod::<SupplyPosition>(
                 &self.autara_program_id,
                 Some(supply_position_filter()),
@@ -94,21 +84,6 @@ impl AutaraSharedState {
                 .get_program_accounts_pod::<Market>(&self.autara_program_id, Some(market_filter())),
             self.arch_client.get_pod_account(&global_pda)
         )?;
-        for (id, acc) in oracles.into_iter().map(|acc| {
-            (
-                acc.pubkey,
-                AccountInfoWithPubkey {
-                    key: acc.pubkey,
-                    lamports: acc.account.lamports,
-                    owner: acc.account.owner,
-                    data: acc.account.data,
-                    utxo: acc.account.utxo,
-                    is_executable: acc.account.is_executable,
-                },
-            )
-        }) {
-            self.oracle_map.insert(id, acc);
-        }
         for (key, account) in supply {
             self.supply_position_map.insert(key, account);
         }
@@ -116,8 +91,27 @@ impl AutaraSharedState {
             self.borrow_position_map.insert(key, account);
         }
         *self.global_config.write().unwrap() = global_config;
+
+        // Collect oracle keys from markets and fetch them in batch
+        let markets: Vec<(Pubkey, Market)> = markets.collect();
+        let oracle_keys: Vec<Pubkey> = markets
+            .iter()
+            .flat_map(|(_, m)| {
+                let keys = m.get_oracle_keys();
+                [keys.0, keys.1]
+            })
+            .collect();
+        let accs = self
+            .arch_client
+            .get_multiple_accounts_batch(&oracle_keys)
+            .await
+            .context("failed to fetch oracle accounts")?;
+        for acc in accs.into_iter() {
+            self.oracle_map.insert(acc.key, acc);
+        }
+
         let ts = get_unix_timestamp();
-        for (key, market) in market {
+        for (key, market) in markets {
             if let Err(e) = self.process_single_market(key, market, ts) {
                 tracing::error!("Failed to process market {}: {:?}", key, e);
             }
@@ -205,8 +199,13 @@ impl AutaraReadClient for AutaraSharedState {
 
     fn all_markets_maybe_stale(
         &self,
-    ) -> impl Iterator<Item = (Pubkey, MarketWrapper<impl std::ops::Deref<Target = Market>>, bool)>
-    {
+    ) -> impl Iterator<
+        Item = (
+            Pubkey,
+            MarketWrapper<impl std::ops::Deref<Target = Market>>,
+            bool,
+        ),
+    > {
         self.market_map.iter().filter_map(|r| {
             let key = *r.key();
             self.load_market_wrapper_maybe_stale(r)

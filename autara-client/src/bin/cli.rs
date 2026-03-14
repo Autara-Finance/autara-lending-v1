@@ -21,7 +21,9 @@ use autara_lib::{
     oracle::pyth::PythPrice,
     token::{create_ata_ix, get_associated_token_address},
 };
-use autara_pyth::{fetch_and_push_feeds, fetch_pyth_price, get_pyth_account, AutaraPythPusherClient};
+use autara_pyth::{
+    fetch_and_push_feeds, fetch_pyth_price, get_pyth_account, AutaraPythPusherClient,
+};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{util::SubscriberInitExt, EnvFilter};
 
@@ -385,7 +387,6 @@ async fn main() -> Result<()> {
         arch_client,
         network,
         autara_stage_program_id(),
-        autara_oracle_stage_program_id(),
         signer,
     );
 
@@ -427,7 +428,10 @@ async fn handle_read_command(
                 println!("\nMarket: {:?}", pubkey);
                 println!("  Supply Token: {}", tn.name(&m.supply_token_info().mint));
                 println!("  Supply Decimals: {}", m.supply_token_info().decimals);
-                println!("  Collateral Token: {}", tn.name(&m.collateral_token_info().mint));
+                println!(
+                    "  Collateral Token: {}",
+                    tn.name(&m.collateral_token_info().mint)
+                );
                 println!(
                     "  Collateral Decimals: {}",
                     m.collateral_token_info().decimals
@@ -615,7 +619,8 @@ async fn handle_tx_command(
 
             println!(
                 "Creating market with supply mint {} and collateral mint {}...",
-                tn.name(&supply_mint_key), tn.name(&collateral_mint_key)
+                tn.name(&supply_mint_key),
+                tn.name(&collateral_mint_key)
             );
             let market_pubkey = client
                 .create_market(create_market_ix, supply_mint_key, collateral_mint_key)
@@ -770,7 +775,9 @@ async fn handle_token_command(
 
             println!(
                 "Minting {} atoms of {} to {:?}...",
-                amount, tn.name(&mint_pubkey), recipient
+                amount,
+                tn.name(&mint_pubkey),
+                recipient
             );
 
             let create_ata = create_ata_ix(&signer_pubkey, None, &recipient, &mint_pubkey);
@@ -829,8 +836,11 @@ async fn handle_token_command(
         TokenCommands::Setup { output } => {
             const TOKEN_AUTHORITY_KEY: &str = "keys/autara-token-authority.key";
 
-            let (_, token_authority_pubkey) = with_secret_key_file(TOKEN_AUTHORITY_KEY)
-                .context(format!("Failed to load token authority key: {}", TOKEN_AUTHORITY_KEY))?;
+            let (_, token_authority_pubkey) =
+                with_secret_key_file(TOKEN_AUTHORITY_KEY).context(format!(
+                    "Failed to load token authority key: {}",
+                    TOKEN_AUTHORITY_KEY
+                ))?;
 
             let tokens = vec![
                 TokenDef {
@@ -867,10 +877,7 @@ async fn handle_token_command(
             let mut tokens_map = serde_json::Map::new();
             for token_def in &tokens {
                 let (mint_keypair, mint_pubkey) = with_secret_key_file(token_def.key_file)
-                    .context(format!(
-                        "Failed to load key file: {}",
-                        token_def.key_file
-                    ))?;
+                    .context(format!("Failed to load key file: {}", token_def.key_file))?;
 
                 let already_exists = account_exists(rpc, &mint_pubkey).await;
 
@@ -912,8 +919,7 @@ async fn handle_token_command(
                     "keyFile".to_string(),
                     serde_json::Value::String(token_def.key_file.to_string()),
                 );
-                tokens_map
-                    .insert(token_def.name.to_string(), serde_json::Value::Object(entry));
+                tokens_map.insert(token_def.name.to_string(), serde_json::Value::Object(entry));
             }
             config_entries.insert("tokens".to_string(), serde_json::Value::Object(tokens_map));
 
@@ -949,7 +955,9 @@ impl TokenNames {
                         if let Some(mint_hex) = entry.get("mint").and_then(|m| m.as_str()) {
                             if let Ok(bytes) = hex::decode(mint_hex) {
                                 if bytes.len() == 32 {
-                                    let pubkey = Pubkey::from(<[u8; 32]>::try_from(bytes.as_slice()).unwrap());
+                                    let pubkey = Pubkey::from(
+                                        <[u8; 32]>::try_from(bytes.as_slice()).unwrap(),
+                                    );
                                     by_mint.insert(pubkey, name.clone());
                                 }
                             }
@@ -1145,9 +1153,7 @@ async fn handle_oracle_command(
                 println!("\nCollateral Oracle:");
                 println!("  Feed Account: {:?}", collateral_oracle_key);
                 print_oracle_provider_info(
-                    m.collateral_vault()
-                        .oracle_provider()
-                        .oracle_provider_ref(),
+                    m.collateral_vault().oracle_provider().oracle_provider_ref(),
                 );
             } else {
                 println!("Market not found: {:?}", market_key);

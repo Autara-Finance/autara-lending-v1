@@ -57,7 +57,6 @@ impl AutaraFixture {
             arch_client,
             arch_sdk::arch_program::bitcoin::Network::Regtest,
             test_env.autara_program_pubkey,
-            test_env.autara_oracle_program_pubkey,
             test_env.user_keypair,
         );
         AutaraFixture {

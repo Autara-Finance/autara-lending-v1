@@ -18,6 +18,8 @@ arch_program = { version = "=0.6.2" }
 apl-token = { version = "=0.6.2", features = ["no-entrypoint"] }
 apl-associated-token-account = { version = "=0.6.2", features = ["no-entrypoint"] }
 
+orca_whirlpools = { path = "../CLAMM/rust-sdk/whirlpool" }
+
 
 bitcoincore-rpc-async = { version = "3.0" }
 
@@ -67,3 +69,4 @@ dashmap = { version = "6.1.0" }
 auto_impl = { version = "1.2.0" }
 uuid = { version = "1.0", features = ["v4"] }
 proptest = { version = "1.4" }
+itertools = { version = "0.14" }

@@ -1,4 +1,7 @@
-use std::{collections::HashMap, ops::Deref};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Deref,
+};
 
 use anyhow::Context;
 use arch_sdk::{
@@ -26,7 +29,6 @@ use crate::{
 pub struct AutaraReadClientImpl {
     arch_client: AsyncArchRpcClient,
     autara_program_id: Pubkey,
-    oracle_program_id: Pubkey,
     market_map: HashMap<Pubkey, Market>,
     supply_position_map: HashMap<Pubkey, SupplyPosition>,
     borrow_position_map: HashMap<Pubkey, BorrowPosition>,
@@ -35,15 +37,10 @@ pub struct AutaraReadClientImpl {
 }
 
 impl AutaraReadClientImpl {
-    pub fn new(
-        arch_client: AsyncArchRpcClient,
-        autara_program_id: Pubkey,
-        oracle_program_id: Pubkey,
-    ) -> Self {
+    pub fn new(arch_client: AsyncArchRpcClient, autara_program_id: Pubkey) -> Self {
         Self {
             arch_client,
             autara_program_id,
-            oracle_program_id,
             market_map: HashMap::new(),
             supply_position_map: HashMap::new(),
             borrow_position_map: HashMap::new(),
@@ -158,30 +155,6 @@ impl AutaraReadClientImpl {
         Ok(())
     }
 
-    pub async fn load_oracles(&mut self) -> anyhow::Result<()> {
-        self.oracle_map = self
-            .arch_client
-            .get_program_accounts(&self.oracle_program_id, None)
-            .await
-            .context("failed to load oracles")?
-            .into_iter()
-            .map(|acc| {
-                (
-                    acc.pubkey,
-                    AccountInfoWithPubkey {
-                        key: acc.pubkey,
-                        lamports: acc.account.lamports,
-                        owner: acc.account.owner,
-                        data: acc.account.data,
-                        utxo: acc.account.utxo,
-                        is_executable: acc.account.is_executable,
-                    },
-                )
-            })
-            .collect();
-        Ok(())
-    }
-
     pub async fn load_markets(&mut self) -> anyhow::Result<()> {
         self.market_map = self
             .load_program_accounts_pod(&self.autara_program_id, Some(market_filter()))
@@ -204,6 +177,13 @@ impl AutaraReadClientImpl {
             .await
             .context("failed to load autara borrow positions")?;
         Ok(())
+    }
+
+    pub fn all_tokens(&self) -> HashSet<Pubkey> {
+        self.market_map
+            .iter()
+            .flat_map(|(_, m)| [m.collateral_token_info().mint, m.supply_token_info().mint])
+            .collect()
     }
 
     pub fn get_borrow_position_health(

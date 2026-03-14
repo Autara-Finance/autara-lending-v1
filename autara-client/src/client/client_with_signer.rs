@@ -35,11 +35,9 @@ impl AutaraFullClientWithSigner<AutaraReadClientImpl> {
         arch_client: AsyncArchRpcClient,
         network: Network,
         autara_program_id: Pubkey,
-        oracle_program_id: Pubkey,
         signer: Keypair,
     ) -> Self {
-        let read_client =
-            AutaraReadClientImpl::new(arch_client.clone(), autara_program_id, oracle_program_id);
+        let read_client = AutaraReadClientImpl::new(arch_client.clone(), autara_program_id);
         Self {
             read_client,
             network,

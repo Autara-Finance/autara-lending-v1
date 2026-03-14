@@ -38,7 +38,6 @@ fn main() -> anyhow::Result<()> {
                 arch_client,
                 config.network,
                 test_env.autara_program_pubkey,
-                test_env.autara_oracle_program_pubkey,
                 test_env.user_keypair,
             );
 
