@@ -18,9 +18,6 @@ arch_program = { version = "=0.6.2" }
 apl-token = { version = "=0.6.2", features = ["no-entrypoint"] }
 apl-associated-token-account = { version = "=0.6.2", features = ["no-entrypoint"] }
 
-orca_whirlpools = { path = "../CLAMM/rust-sdk/whirlpool" }
-
-
 bitcoincore-rpc-async = { version = "3.0" }
 
 # Core serialization and data handling
