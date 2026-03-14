@@ -42,6 +42,10 @@ impl<'a, 'b> RedeemProtocolFeesAccounts<'a, 'b> {
     }
 
     pub fn validate(&self) -> LendingProgramResult<()> {
+        let (expected_global_config, _) = autara_lib::pda::find_global_config_pda(&crate::id());
+        if *self.global_config.key() != expected_global_config {
+            return Err(LendingAccountValidationError::InvalidProtocolAuthority.into());
+        }
         let market = self.market.load_ref();
         let global_config = self.global_config.load_ref();
         if !global_config.can_redeem_fees(self.signer.key) {
@@ -113,6 +117,35 @@ pub mod tests {
             panic!("Expected an error, but got Ok");
         };
         assert_eq!(err, LendingAccountValidationError::InvalidMarketVault);
+    }
+
+    #[test]
+    pub fn validate_fails_if_global_config_is_not_canonical_pda() {
+        let mut account_set = AutaraAccounts::new();
+        // Replace with a non-canonical global config (different key, same data)
+        let spoofed_global_config_data = autara_lib::state::global_config::GlobalConfig::new(
+            *account_set.global_admin.key,
+            *account_set.global_admin.key,
+            0,
+        );
+        account_set.global_config = crate::ixs::test_utils::create_autara_account(
+            arch_program::pubkey::Pubkey::new_unique(),
+            spoofed_global_config_data,
+        );
+        let accounts = [
+            account_set.global_admin.clone(),
+            account_set.global_config.clone(),
+            account_set.market.clone(),
+            account_set.user_supply_ata.clone(),
+            account_set.market_supply_vault.clone(),
+            account_set.apl_token_program.clone(),
+        ];
+        let accounts_iter = accounts.iter();
+        let result = RedeemProtocolFeesAccounts::from_accounts(&mut accounts_iter.into_iter());
+        let Err(err) = result else {
+            panic!("Expected an error, but got Ok");
+        };
+        assert_eq!(err, LendingAccountValidationError::InvalidProtocolAuthority);
     }
 
     #[test]

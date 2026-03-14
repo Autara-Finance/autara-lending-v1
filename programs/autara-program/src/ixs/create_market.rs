@@ -32,7 +32,7 @@ impl<'a, 'b> CreateMarketAccounts<'a, 'b> {
     where
         'a: 'b,
     {
-        Ok(Self {
+        let this = Self {
             curator: next_account_info(accounts)?.try_into()?,
             payer: next_account_info(accounts)?.try_into()?,
             global_config: next_account_info(accounts)?.try_into()?,
@@ -44,6 +44,16 @@ impl<'a, 'b> CreateMarketAccounts<'a, 'b> {
             apl_token_program: next_account_info(accounts)?.try_into()?,
             associated_token_program: next_account_info(accounts)?.try_into()?,
             system_program: next_account_info(accounts)?.try_into()?,
-        })
+        };
+        this.validate()?;
+        Ok(this)
+    }
+
+    pub fn validate(&self) -> LendingProgramResult<()> {
+        let (expected_global_config, _) = autara_lib::pda::find_global_config_pda(&crate::id());
+        if *self.global_config.key() != expected_global_config {
+            return Err(crate::error::LendingAccountValidationError::InvalidProtocolAuthority.into());
+        }
+        Ok(())
     }
 }

@@ -148,6 +148,13 @@ impl MarketConfig {
     }
 
     pub fn update_ltv(&mut self, ltv_config: &LtvConfig) -> LendingResult {
+        if ltv_config.max_ltv.is_negative()
+            || ltv_config.unhealthy_ltv.is_negative()
+            || ltv_config.liquidation_bonus.is_negative()
+        {
+            return Err(LendingError::InvalidLtvConfig.into())
+                .with_msg("ltv values must be non-negative");
+        }
         // cant reduce the unhealthy ltv, it could make some positions immediately unhealthy
         if self.ltv_config.unhealthy_ltv > ltv_config.unhealthy_ltv {
             return Err(LendingError::InvalidLtvConfig.into())
@@ -379,6 +386,51 @@ pub mod tests {
             liquidation_bonus: IFixedPoint::from(0.09),
         };
         let result = market_config.update_ltv(&invalid_ltv_config);
+        assert!(matches!(
+            result.unwrap_err().error,
+            LendingError::InvalidLtvConfig
+        ));
+    }
+
+    #[test]
+    fn test_update_ltv_rejects_negative_max_ltv() {
+        let mut market_config = test_config();
+        let invalid_ltv = LtvConfig {
+            max_ltv: IFixedPoint::from_i64_u64_ratio(-1, 100),
+            unhealthy_ltv: IFixedPoint::from(0.9),
+            liquidation_bonus: IFixedPoint::from(0.05),
+        };
+        let result = market_config.update_ltv(&invalid_ltv);
+        assert!(matches!(
+            result.unwrap_err().error,
+            LendingError::InvalidLtvConfig
+        ));
+    }
+
+    #[test]
+    fn test_update_ltv_rejects_negative_unhealthy_ltv() {
+        let mut market_config = MarketConfig::default();
+        let invalid_ltv = LtvConfig {
+            max_ltv: IFixedPoint::from(0.5),
+            unhealthy_ltv: IFixedPoint::from_i64_u64_ratio(-1, 100),
+            liquidation_bonus: IFixedPoint::from(0.05),
+        };
+        let result = market_config.update_ltv(&invalid_ltv);
+        assert!(matches!(
+            result.unwrap_err().error,
+            LendingError::InvalidLtvConfig
+        ));
+    }
+
+    #[test]
+    fn test_update_ltv_rejects_negative_liquidation_bonus() {
+        let mut market_config = MarketConfig::default();
+        let invalid_ltv = LtvConfig {
+            max_ltv: IFixedPoint::from(0.5),
+            unhealthy_ltv: IFixedPoint::from(0.9),
+            liquidation_bonus: IFixedPoint::from_i64_u64_ratio(-1, 100),
+        };
+        let result = market_config.update_ltv(&invalid_ltv);
         assert!(matches!(
             result.unwrap_err().error,
             LendingError::InvalidLtvConfig

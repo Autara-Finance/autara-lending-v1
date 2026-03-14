@@ -33,10 +33,49 @@ impl InterestRateCurveKind {
 
     pub fn is_valid(&self) -> bool {
         match self {
-            InterestRateCurveKind::Fixed(_) => true,
+            InterestRateCurveKind::Fixed(rate) => {
+                // Reject negative rates (would cause NegativeInterestRate in sync_clock)
+                // and rates that would overflow checked_exp after 1 second (MAX_EXP_ARG ≈ 55.26)
+                !rate.0.is_negative()
+                    && rate.0 <= crate::math::ifixed_point::IFixedPoint::from_i64_u64_ratio(5526, 100)
+            }
             InterestRateCurveKind::Polyline(curve) => curve.validate().is_ok(),
             InterestRateCurveKind::Adaptive(_) => true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::math::ifixed_point::IFixedPoint;
+
+    #[test]
+    fn fixed_negative_rate_is_invalid() {
+        let curve = InterestRateCurveKind::Fixed(InterestRatePerSecond::new(
+            IFixedPoint::lit("-0.1"),
+        ));
+        assert!(!curve.is_valid());
+    }
+
+    #[test]
+    fn fixed_rate_exceeding_max_exp_arg_is_invalid() {
+        let curve = InterestRateCurveKind::Fixed(InterestRatePerSecond::new(
+            IFixedPoint::from_i64(56),
+        ));
+        assert!(!curve.is_valid());
+    }
+
+    #[test]
+    fn fixed_zero_rate_is_valid() {
+        let curve = InterestRateCurveKind::Fixed(InterestRatePerSecond::new(IFixedPoint::zero()));
+        assert!(curve.is_valid());
+    }
+
+    #[test]
+    fn fixed_reasonable_rate_is_valid() {
+        let curve = InterestRateCurveKind::new_approximate_fixed_apy(0.10);
+        assert!(curve.is_valid());
     }
 }
 
