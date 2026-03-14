@@ -17,4 +17,4 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 itertools = { workspace = true }
 
-orca_whirlpools = { path = "../../CLAMM/rust-sdk/whirlpool", optional = true }
+orca_whirlpools = { path = "../../CLAMM/rust-sdk/whirlpool" }
