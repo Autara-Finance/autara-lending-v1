@@ -19,7 +19,8 @@ use crate::{
     api::{api::AutaraServerApiServer, market::FullMarket, types::*},
     client::{
         blockhash_cache::BlockhashCache, client_without_signer::AutaraFullClientWithoutSigner,
-        read::AutaraReadClient, shared_autara_state::AutaraSharedState,
+        read::{AutaraReadClient, BorrowPositionInfo, SupplyPositionInfo, UserPositionItem},
+        shared_autara_state::AutaraSharedState,
     },
     rpc_ext::ArchAsyncRpcExt,
     test::TokenMinter,
@@ -29,6 +30,7 @@ pub struct AutataServerContext {
     pub client: AutaraFullClientWithoutSigner<Arc<AutaraSharedState>>,
     pub minters: Vec<TokenMinter>,
     active_market_streams: DashSet<ConnectionId>,
+    active_user_position_streams: DashSet<ConnectionId>,
 }
 
 impl Deref for AutataServerContext {
@@ -124,6 +126,72 @@ impl AutaraServerApiServer for AutataServerContext {
         .await;
 
         self.active_market_streams.remove(&conn_id);
+        result
+    }
+
+    async fn get_all_user_positions_streamed(
+        &self,
+        subscription_sink: PendingSubscriptionSink,
+    ) -> SubscriptionResult {
+        let conn_id = subscription_sink.connection_id();
+
+        if !self.active_user_position_streams.insert(conn_id) {
+            subscription_sink
+                .reject(ErrorObjectOwned::owned(
+                    INVALID_REQUEST_CODE,
+                    "A user position stream is already active on this connection",
+                    None::<()>,
+                ))
+                .await;
+            return Ok(());
+        }
+
+        let result = async {
+            let sink = subscription_sink.accept().await?;
+            let read = self.read_client();
+
+            for (_, supply_position) in read.all_supply_position() {
+                let market = read.get_market(supply_position.market());
+                let owned_atoms = market
+                    .map(|m| {
+                        m.market()
+                            .supply_position_info(&supply_position)
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+                let item = UserPositionItem::Supply(SupplyPositionInfo {
+                    supply_position: *supply_position,
+                    owned_atoms,
+                });
+                let msg = SubscriptionMessage::from_json(&item)?;
+                if sink.send(msg).await.is_err() {
+                    break;
+                }
+            }
+
+            for (_, borrow_position) in read.all_borrow_position() {
+                let health = read
+                    .get_market(borrow_position.market())
+                    .map(|m| {
+                        m.borrow_position_health(&borrow_position)
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+                let item = UserPositionItem::Borrow(BorrowPositionInfo {
+                    borrow_position: *borrow_position,
+                    health,
+                });
+                let msg = SubscriptionMessage::from_json(&item)?;
+                if sink.send(msg).await.is_err() {
+                    break;
+                }
+            }
+
+            Ok(())
+        }
+        .await;
+
+        self.active_user_position_streams.remove(&conn_id);
         result
     }
 
@@ -292,6 +360,7 @@ pub async fn build_autara_server(
         ),
         minters,
         active_market_streams: DashSet::new(),
+        active_user_position_streams: DashSet::new(),
     };
     Ok(context.into_rpc())
 }

@@ -1,6 +1,9 @@
 use jsonrpsee::{core::RpcResult, core::SubscriptionResult, proc_macros::rpc};
 
-use crate::api::{market::FullMarket, types::*};
+use crate::{
+    api::{market::FullMarket, types::*},
+    client::read::UserPositionItem,
+};
 
 #[rpc(server, client)]
 pub trait AutaraServerApi {
@@ -23,6 +26,10 @@ pub trait AutaraServerApi {
     /// Get all markets streamed one by one over WebSocket (one-shot, not a live feed)
     #[subscription(name = "get_all_markets_streamed" => "market", unsubscribe = "unsubscribe_all_markets_streamed", item = FullMarket)]
     async fn get_all_markets_streamed(&self) -> SubscriptionResult;
+
+    /// Get all user positions streamed one by one over WebSocket (one-shot, not a live feed)
+    #[subscription(name = "get_all_user_positions_streamed" => "user_position", unsubscribe = "unsubscribe_all_user_positions_streamed", item = UserPositionItem)]
+    async fn get_all_user_positions_streamed(&self) -> SubscriptionResult;
 
     /// Get user positions for a specific user
     #[method(name = "get_user_positions")]

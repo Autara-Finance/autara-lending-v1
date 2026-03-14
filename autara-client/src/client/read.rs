@@ -104,3 +104,10 @@ pub struct SupplyPositionInfo {
     pub supply_position: SupplyPosition,
     pub owned_atoms: u64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum UserPositionItem {
+    Supply(SupplyPositionInfo),
+    Borrow(BorrowPositionInfo),
+}
