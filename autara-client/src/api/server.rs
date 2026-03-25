@@ -3,7 +3,7 @@ use std::{ops::Deref, sync::Arc};
 use anyhow::Context;
 use arch_sdk::{
     arch_program::{pubkey::Pubkey, sanitized::ArchMessage},
-    AsyncArchRpcClient, RuntimeTransaction,
+    ArchRpcClient, RuntimeTransaction,
 };
 use dashmap::DashSet;
 use jsonrpsee::{
@@ -18,7 +18,8 @@ use jsonrpsee::{
 use crate::{
     api::{api::AutaraServerApiServer, market::FullMarket, types::*},
     client::{
-        blockhash_cache::BlockhashCache, client_without_signer::AutaraFullClientWithoutSigner,
+        blockhash_cache::BlockhashCache,
+        client_without_signer::AutaraFullClientWithoutSigner,
         read::{AutaraReadClient, BorrowPositionInfo, SupplyPositionInfo, UserPositionItem},
         shared_autara_state::AutaraSharedState,
     },
@@ -350,7 +351,7 @@ impl AutaraServerApiServer for AutataServerContext {
 pub async fn build_autara_server(
     read_client: Arc<AutaraSharedState>,
     minters: Vec<TokenMinter>,
-    arch_client: AsyncArchRpcClient,
+    arch_client: ArchRpcClient,
 ) -> anyhow::Result<RpcModule<AutataServerContext>> {
     let context = AutataServerContext {
         client: AutaraFullClientWithoutSigner::new(

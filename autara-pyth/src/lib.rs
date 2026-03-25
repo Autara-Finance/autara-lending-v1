@@ -4,7 +4,7 @@ use arch_sdk::{
     arch_program::{
         account::AccountMeta, instruction::Instruction, pubkey::Pubkey, sanitized::ArchMessage,
     },
-    build_and_sign_transaction, AsyncArchRpcClient, Status,
+    build_and_sign_transaction, ArchRpcClient, Status,
 };
 use autara_lib::oracle::pyth::PythPrice;
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,7 @@ pub const USDC_FEED: &str = "0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2
 pub const ETH_FEED: &str = "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
 
 pub async fn fetch_and_push_feeds(
-    client: &AsyncArchRpcClient,
+    client: &ArchRpcClient,
     autara_oracle_program_id: &Pubkey,
     signer: &Keypair,
     feeds: &[impl AsRef<str>],
@@ -72,7 +72,7 @@ pub async fn fetch_and_push_feeds(
 }
 
 pub struct AutaraPythPusherClient {
-    pub client: AsyncArchRpcClient,
+    pub client: ArchRpcClient,
     pub autara_oracle_program_id: Pubkey,
     pub network: Network,
 }
@@ -103,7 +103,7 @@ impl AutaraPythPusherClient {
 }
 
 pub async fn build_and_send_tx(
-    client: &AsyncArchRpcClient,
+    client: &ArchRpcClient,
     signer_pk: &Pubkey,
     signer: &Keypair,
     ixs: &[Instruction],

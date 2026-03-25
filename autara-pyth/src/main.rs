@@ -1,5 +1,5 @@
 use arch_program::bitcoin::Network;
-use arch_sdk::{generate_new_keypair, AsyncArchRpcClient, Config};
+use arch_sdk::{generate_new_keypair, ArchRpcClient, Config};
 use autara_pyth::fetch_and_push_feeds;
 use clap::Parser;
 
@@ -46,10 +46,10 @@ pub async fn main() {
         )
         .init();
     let config = make_config(&args.rpc, args.network);
-    let client = AsyncArchRpcClient::new(&config);
+    let client = ArchRpcClient::new(&config);
     let (authority_keypair, _, _) = generate_new_keypair(args.network);
 
-    AsyncArchRpcClient::new(&config)
+    ArchRpcClient::new(&config)
         .create_and_fund_account_with_faucet(&authority_keypair)
         .await
         .unwrap();

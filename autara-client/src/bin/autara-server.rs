@@ -144,7 +144,7 @@ fn default_market_config(
     }
 }
 
-async fn account_exists(client: &arch_sdk::AsyncArchRpcClient, pubkey: &Pubkey) -> bool {
+async fn account_exists(client: &arch_sdk::ArchRpcClient, pubkey: &Pubkey) -> bool {
     client.read_account_info(*pubkey).await.is_ok()
 }
 
@@ -392,10 +392,9 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     // Start the shared state (auto-reloading)
-    let autara_state =
-        AutaraSharedState::new(arch_client.clone(), autara_program_id)
-            .spawn()
-            .0;
+    let autara_state = AutaraSharedState::new(arch_client.clone(), autara_program_id)
+        .spawn()
+        .0;
 
     // Build and start the RPC server
     let cors = CorsLayer::new()
