@@ -68,6 +68,20 @@ enum Commands {
     /// Oracle operations (fetch, push, inspect feeds)
     #[command(subcommand)]
     Oracle(OracleCommands),
+
+    /// Keypair utilities
+    #[command(subcommand)]
+    Key(KeyCommands),
+}
+
+#[derive(Subcommand)]
+enum KeyCommands {
+    /// Print the pubkey for a key file. Auto-generates the key if the file doesn't exist.
+    Show {
+        /// Path to the key file
+        #[arg(long)]
+        key_file: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -354,6 +368,14 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // Handle commands that don't need signer/RPC up front.
+    if let Commands::Key(KeyCommands::Show { ref key_file }) = cli.command {
+        let (_, pubkey) = with_secret_key_file(key_file)
+            .context(format!("Failed to load or generate key: {}", key_file))?;
+        println!("{}", hex::encode(pubkey.serialize()));
+        return Ok(());
+    }
+
     let signer_path = cli
         .signer
         .or_else(|| std::env::var("AUTARA_SIGNER_KEY").ok());
@@ -408,6 +430,8 @@ async fn main() -> Result<()> {
         Commands::Oracle(oracle_cmd) => {
             handle_oracle_command(&client, oracle_cmd, network, signer).await
         }
+        // `Key` is handled above before signer/RPC setup.
+        Commands::Key(_) => unreachable!(),
     }
 }
 
@@ -834,68 +858,56 @@ async fn handle_token_command(
         }
 
         TokenCommands::Setup { output } => {
-            const TOKEN_AUTHORITY_KEY: &str = "keys/autara-token-authority.key";
-
-            let (_, token_authority_pubkey) =
-                with_secret_key_file(TOKEN_AUTHORITY_KEY).context(format!(
-                    "Failed to load token authority key: {}",
-                    TOKEN_AUTHORITY_KEY
-                ))?;
-
             let tokens = vec![
                 TokenDef {
                     name: "BTC",
                     key_file: "keys/token-btc.key",
+                    authority_key_file: "keys/token-btc-authority.key",
                     decimals: 8,
                 },
                 TokenDef {
                     name: "USDC",
                     key_file: "keys/token-usdc.key",
+                    authority_key_file: "keys/token-usdc-authority.key",
                     decimals: 6,
                 },
                 TokenDef {
-                    name: "ETH",
-                    key_file: "keys/token-eth.key",
-                    decimals: 8,
+                    name: "USDT",
+                    key_file: "keys/token-usdt.key",
+                    authority_key_file: "keys/token-usdt-authority.key",
+                    decimals: 6,
                 },
             ];
 
             println!("=== Token Setup ===");
-            println!("Token authority: {:?}", token_authority_pubkey);
             let mut config_entries = serde_json::Map::new();
-
-            // Write authority info at the top level
-            config_entries.insert(
-                "authorityKeyFile".to_string(),
-                serde_json::Value::String(TOKEN_AUTHORITY_KEY.to_string()),
-            );
-            config_entries.insert(
-                "authority".to_string(),
-                serde_json::Value::String(hex::encode(token_authority_pubkey.serialize())),
-            );
-
             let mut tokens_map = serde_json::Map::new();
             for token_def in &tokens {
                 let (mint_keypair, mint_pubkey) = with_secret_key_file(token_def.key_file)
                     .context(format!("Failed to load key file: {}", token_def.key_file))?;
+                let (_, authority_pubkey) = with_secret_key_file(token_def.authority_key_file)
+                    .context(format!(
+                        "Failed to load mint authority key file: {}",
+                        token_def.authority_key_file
+                    ))?;
 
                 let already_exists = account_exists(rpc, &mint_pubkey).await;
 
                 if already_exists {
                     println!(
-                        "  {} mint already exists: {:?}",
-                        token_def.name, mint_pubkey
+                        "  {} mint already exists: {:?} (authority {:?})",
+                        token_def.name, mint_pubkey, authority_pubkey
                     );
                 } else {
                     println!(
-                        "  Creating {} mint ({} decimals)...",
-                        token_def.name, token_def.decimals
+                        "  Creating {} mint ({} decimals, authority {:?})...",
+                        token_def.name, token_def.decimals, authority_pubkey
                     );
                     create_mint_on_chain(
                         rpc,
                         &signer_pubkey,
                         signer_keypair,
-                        &token_authority_pubkey,
+                        &authority_pubkey,
                         mint_keypair,
                         &mint_pubkey,
                         token_def.decimals,
@@ -919,6 +931,14 @@ async fn handle_token_command(
                     "keyFile".to_string(),
                     serde_json::Value::String(token_def.key_file.to_string()),
                 );
+                entry.insert(
+                    "mintAuthorityKeyFile".to_string(),
+                    serde_json::Value::String(token_def.authority_key_file.to_string()),
+                );
+                entry.insert(
+                    "mintAuthority".to_string(),
+                    serde_json::Value::String(hex::encode(authority_pubkey.serialize())),
+                );
                 tokens_map.insert(token_def.name.to_string(), serde_json::Value::Object(entry));
             }
             config_entries.insert("tokens".to_string(), serde_json::Value::Object(tokens_map));
@@ -937,6 +957,7 @@ async fn handle_token_command(
 struct TokenDef {
     name: &'static str,
     key_file: &'static str,
+    authority_key_file: &'static str,
     decimals: u8,
 }
 

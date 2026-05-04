@@ -1,0 +1,100 @@
+{
+  "markets": [
+    {
+      "name": "BTC-USDC conservative (80% LTV)",
+      "supply": "USDC",
+      "collateral": "BTC",
+      "curatorKeyFile": "keys/curator-conservative.key",
+      "index": 0,
+      "ltvConfig": {
+        "maxLtv": "0.80",
+        "unhealthyLtv": "0.85",
+        "liquidationBonus": "0.05"
+      }
+    },
+    {
+      "name": "BTC-USDC conservative (80% LTV) reverse",
+      "supply": "BTC",
+      "collateral": "USDC",
+      "curatorKeyFile": "keys/curator-conservative.key",
+      "index": 0,
+      "ltvConfig": {
+        "maxLtv": "0.80",
+        "unhealthyLtv": "0.85",
+        "liquidationBonus": "0.05"
+      }
+    },
+    {
+      "name": "BTC-USDC balanced (86% LTV)",
+      "supply": "USDC",
+      "collateral": "BTC",
+      "curatorKeyFile": "keys/curator-balanced.key",
+      "index": 0,
+      "ltvConfig": {
+        "maxLtv": "0.86",
+        "unhealthyLtv": "0.90",
+        "liquidationBonus": "0.05"
+      }
+    },
+    {
+      "name": "BTC-USDC balanced (86% LTV) reverse",
+      "supply": "BTC",
+      "collateral": "USDC",
+      "curatorKeyFile": "keys/curator-balanced.key",
+      "index": 0,
+      "ltvConfig": {
+        "maxLtv": "0.86",
+        "unhealthyLtv": "0.90",
+        "liquidationBonus": "0.05"
+      }
+    },
+    {
+      "name": "BTC-USDT (80% LTV)",
+      "supply": "USDT",
+      "collateral": "BTC",
+      "curatorKeyFile": "keys/curator-balanced.key",
+      "index": 0,
+      "ltvConfig": {
+        "maxLtv": "0.80",
+        "unhealthyLtv": "0.85",
+        "liquidationBonus": "0.05"
+      }
+    },
+    {
+      "name": "BTC-USDT (80% LTV) reverse",
+      "supply": "BTC",
+      "collateral": "USDT",
+      "curatorKeyFile": "keys/curator-balanced.key",
+      "index": 0,
+      "ltvConfig": {
+        "maxLtv": "0.80",
+        "unhealthyLtv": "0.85",
+        "liquidationBonus": "0.05"
+      }
+    },
+    {
+      "name": "USDC-USDT (90% LTV)",
+      "supply": "USDC",
+      "collateral": "USDT",
+      "curatorKeyFile": "keys/curator-balanced.key",
+      "index": 0,
+      "ltvConfig": {
+        "maxLtv": "0.90",
+        "unhealthyLtv": "0.94",
+        "liquidationBonus": "0.05"
+      }
+    },
+    {
+      "name": "USDC-USDT (90% LTV) reverse",
+      "supply": "USDT",
+      "collateral": "USDC",
+      "curatorKeyFile": "keys/curator-balanced.key",
+      "index": 0,
+      "ltvConfig": {
+        "maxLtv": "0.90",
+        "unhealthyLtv": "0.94",
+        "liquidationBonus": "0.05"
+      }
+    }
+  ]
+}

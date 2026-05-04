@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context};
+use arch_sdk::arch_program::bitcoin::key::Keypair;
 use arch_sdk::arch_program::bitcoin::Network;
 use arch_sdk::arch_program::pubkey::Pubkey;
 use arch_sdk::with_secret_key_file;
@@ -16,10 +17,11 @@ use autara_client::prometheus::exporter::PrometheusExporter;
 use autara_client::test::TokenMinter;
 use autara_lib::interest_rate::interest_rate_kind::InterestRateCurveKind;
 use autara_lib::ixs::CreateMarketInstruction;
+use autara_lib::math::ifixed_point::IFixedPoint;
 use autara_lib::oracle::oracle_config::OracleConfig;
 use autara_lib::pda::find_market_pda;
 use autara_lib::state::market_config::LtvConfig;
-use autara_pyth::{fetch_and_push_feeds, BTC_FEED, ETH_FEED, USDC_FEED};
+use autara_pyth::{fetch_and_push_feeds, BTC_FEED, ETH_FEED, USDC_FEED, USDT_FEED};
 use clap::Parser;
 use jsonrpsee::server::{RpcServiceBuilder, Server};
 use serde::Deserialize;
@@ -65,18 +67,14 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0:62777")]
     prometheus: String,
 
-    /// Path to market config JSON file (CreateMarketInstruction fields).
-    /// If not provided, uses a sensible default config.
-    #[arg(long)]
-    market_config: Option<String>,
+    /// Path to markets deploy-plan JSON (list of markets, each with curator + LTV config).
+    /// If not provided, no markets are created and the server only runs the API.
+    #[arg(long, default_value = "markets.json")]
+    markets: String,
 }
 
 #[derive(Deserialize)]
 struct TokensFile {
-    #[serde(rename = "authorityKeyFile")]
-    authority_key_file: String,
-    #[allow(dead_code)]
-    authority: String,
     tokens: HashMap<String, TokenEntry>,
 }
 
@@ -87,6 +85,41 @@ struct TokenEntry {
     decimals: u8,
     #[serde(rename = "keyFile")]
     key_file: String,
+    #[serde(rename = "mintAuthorityKeyFile")]
+    mint_authority_key_file: String,
+    #[serde(rename = "mintAuthority", default)]
+    mint_authority: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct MarketsFile {
+    markets: Vec<MarketEntry>,
+}
+
+#[derive(Deserialize)]
+struct MarketEntry {
+    /// Optional human-readable label (used only in logs).
+    #[serde(default)]
+    name: Option<String>,
+    /// Token name from tokens.json (e.g. "BTC").
+    supply: String,
+    /// Token name from tokens.json (e.g. "USDC").
+    collateral: String,
+    /// Path to the curator keypair file. Auto-generated on first run if missing.
+    #[serde(rename = "curatorKeyFile")]
+    curator_key_file: String,
+    /// Market index — set to a different value to create multiple markets with the
+    /// same (curator, supply, collateral) tuple. Defaults to 0.
+    #[serde(default)]
+    index: u8,
+    #[serde(rename = "ltvConfig")]
+    ltv_config: LtvConfig,
+    #[serde(default, rename = "maxUtilisationRate")]
+    max_utilisation_rate: Option<IFixedPoint>,
+    #[serde(default, rename = "lendingMarketFeeInBps")]
+    lending_market_fee_in_bps: Option<u16>,
+    #[serde(default, rename = "interestRate")]
+    interest_rate: Option<InterestRateCurveKind>,
 }
 
 fn parse_network(network: &str) -> anyhow::Result<Network> {
@@ -115,33 +148,13 @@ fn pyth_feed_for_token(name: &str) -> Option<[u8; 32]> {
         "BTC" => BTC_FEED,
         "USDC" => USDC_FEED,
         "ETH" => ETH_FEED,
+        "USDT" => USDT_FEED,
         _ => return None,
     };
     let hex_str = feed_hex.strip_prefix("0x").unwrap_or(feed_hex);
     let mut id = [0u8; 32];
     hex::decode_to_slice(hex_str, &mut id).ok()?;
     Some(id)
-}
-
-fn default_market_config(
-    supply_feed_id: [u8; 32],
-    collateral_feed_id: [u8; 32],
-    oracle_program_id: Pubkey,
-) -> CreateMarketInstruction {
-    CreateMarketInstruction {
-        market_bump: 0,
-        index: 0,
-        ltv_config: LtvConfig {
-            max_ltv: 0.8.into(),
-            unhealthy_ltv: 0.9.into(),
-            liquidation_bonus: 0.05.into(),
-        },
-        max_utilisation_rate: 0.9.into(),
-        supply_oracle_config: OracleConfig::new_pyth(supply_feed_id, oracle_program_id),
-        collateral_oracle_config: OracleConfig::new_pyth(collateral_feed_id, oracle_program_id),
-        interest_rate: InterestRateCurveKind::new_adaptive(),
-        lending_market_fee_in_bps: 100,
-    }
 }
 
 async fn account_exists(client: &arch_sdk::AsyncArchRpcClient, pubkey: &Pubkey) -> bool {
@@ -188,24 +201,58 @@ async fn main() -> Result<(), anyhow::Error> {
         .context(format!("Failed to read tokens config: {}", args.tokens))?;
     let tokens_file: TokensFile =
         serde_json::from_str(&tokens_json).context("Failed to parse tokens config")?;
-    let (token_authority_keypair, token_authority_pubkey) =
-        with_secret_key_file(&tokens_file.authority_key_file).context(format!(
-            "Failed to load token authority key: {}",
-            tokens_file.authority_key_file
-        ))?;
     let tokens = &tokens_file.tokens;
     tracing::info!("Loaded {} tokens from config", tokens.len());
-    tracing::info!("Token authority:    {:?}", token_authority_pubkey);
 
-    // Load optional market config override
-    let market_config_override: Option<CreateMarketInstruction> =
-        if let Some(ref path) = args.market_config {
-            let json = std::fs::read_to_string(path)
-                .context(format!("Failed to read market config: {}", path))?;
-            Some(serde_json::from_str(&json).context("Failed to parse market config JSON")?)
-        } else {
+    // Load per-token mint authority keypairs.
+    let mut token_authorities: HashMap<String, (Keypair, Pubkey)> = HashMap::new();
+    for (name, token) in tokens {
+        let (kp, pk) = with_secret_key_file(&token.mint_authority_key_file).context(format!(
+            "Failed to load mint authority key for {}: {}",
+            name, token.mint_authority_key_file
+        ))?;
+        tracing::info!("Mint authority for {}: {:?}", name, pk);
+        token_authorities.insert(name.clone(), (kp, pk));
+    }
+
+    // Load markets deploy plan (optional — server can run without creating any markets).
+    let markets_plan: Option<MarketsFile> = match std::fs::read_to_string(&args.markets) {
+        Ok(json) => Some(
+            serde_json::from_str(&json)
+                .context(format!("Failed to parse markets plan: {}", args.markets))?,
+        ),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            tracing::warn!(
+                "No markets plan at {} — skipping market creation",
+                args.markets
+            );
             None
-        };
+        }
+        Err(err) => {
+            return Err(anyhow!(
+                "Failed to read markets plan {}: {}",
+                args.markets,
+                err
+            ))
+        }
+    };
+
+    // Load + faucet-fund every unique curator referenced by the plan. Auto-generates the
+    // key file if missing (via `with_secret_key_file`), so first run materializes the keys.
+    let mut curators: HashMap<String, (Keypair, Pubkey)> = HashMap::new();
+    if let Some(ref plan) = markets_plan {
+        for entry in &plan.markets {
+            if curators.contains_key(&entry.curator_key_file) {
+                continue;
+            }
+            let (kp, pk) = with_secret_key_file(&entry.curator_key_file).context(format!(
+                "Failed to load or generate curator key: {}",
+                entry.curator_key_file
+            ))?;
+            tracing::info!("Curator {} -> {:?}", entry.curator_key_file, pk);
+            curators.insert(entry.curator_key_file.clone(), (kp, pk));
+        }
+    }
 
     // Setup Arch client
     let config = ArchConfig {
@@ -224,12 +271,25 @@ async fn main() -> Result<(), anyhow::Error> {
     {
         tracing::warn!("Faucet funding failed (may already be funded): {:?}", e);
     }
-    tracing::info!("Funding token signer account via faucet...");
-    if let Err(e) = arch_client
-        .create_and_fund_account_with_faucet(&token_authority_keypair)
-        .await
-    {
-        tracing::warn!("Faucet funding failed (may already be funded): {:?}", e);
+    for (name, (kp, _)) in &token_authorities {
+        tracing::info!("Funding mint authority for {} via faucet...", name);
+        if let Err(e) = arch_client.create_and_fund_account_with_faucet(kp).await {
+            tracing::warn!(
+                "Faucet funding for {} authority failed (may already be funded): {:?}",
+                name,
+                e
+            );
+        }
+    }
+    for (path, (kp, _)) in &curators {
+        tracing::info!("Funding curator {} via faucet...", path);
+        if let Err(e) = arch_client.create_and_fund_account_with_faucet(kp).await {
+            tracing::warn!(
+                "Faucet funding for curator {} failed (may already be funded): {:?}",
+                path,
+                e
+            );
+        }
     }
 
     // Create the client for market creation
@@ -261,85 +321,125 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     let token_names: Vec<String> = tokens.keys().cloned().collect();
-    // Create markets for all token pair combinations (if not already existing)
-    let token_list: Vec<(String, &TokenEntry)> =
-        tokens.iter().map(|(k, v)| (k.clone(), v)).collect();
-    for i in 0..token_list.len() {
-        for j in 0..token_list.len() {
-            if i == j {
-                continue;
-            }
-            let (supply_name, supply_token) = &token_list[i];
-            let (collateral_name, collateral_token) = &token_list[j];
 
+    // Create markets from the deploy plan (each market under its own curator key).
+    if let Some(ref plan) = markets_plan {
+        for entry in &plan.markets {
+            let label = entry.name.as_deref().unwrap_or("(unnamed)");
+            let supply_token = match tokens.get(&entry.supply) {
+                Some(t) => t,
+                None => {
+                    tracing::error!(
+                        "Market '{}': unknown supply token {} (not in tokens.json)",
+                        label,
+                        entry.supply
+                    );
+                    continue;
+                }
+            };
+            let collateral_token = match tokens.get(&entry.collateral) {
+                Some(t) => t,
+                None => {
+                    tracing::error!(
+                        "Market '{}': unknown collateral token {} (not in tokens.json)",
+                        label,
+                        entry.collateral
+                    );
+                    continue;
+                }
+            };
             let supply_mint = parse_pubkey(&supply_token.mint)?;
             let collateral_mint = parse_pubkey(&collateral_token.mint)?;
 
-            let supply_feed_id = pyth_feed_for_token(supply_name);
-            let collateral_feed_id = pyth_feed_for_token(collateral_name);
+            let supply_feed_id = match pyth_feed_for_token(&entry.supply) {
+                Some(id) => id,
+                None => {
+                    tracing::error!(
+                        "Market '{}': no Pyth feed mapping for {}",
+                        label,
+                        entry.supply
+                    );
+                    continue;
+                }
+            };
+            let collateral_feed_id = match pyth_feed_for_token(&entry.collateral) {
+                Some(id) => id,
+                None => {
+                    tracing::error!(
+                        "Market '{}': no Pyth feed mapping for {}",
+                        label,
+                        entry.collateral
+                    );
+                    continue;
+                }
+            };
 
-            if supply_feed_id.is_none() || collateral_feed_id.is_none() {
-                tracing::warn!(
-                    "Skipping market {}/{}: no Pyth feed mapping",
-                    supply_name,
-                    collateral_name
-                );
-                continue;
-            }
+            let (curator_keypair, curator_pubkey) = curators
+                .get(&entry.curator_key_file)
+                .expect("curator preloaded above");
 
             let (market_pda, _) = find_market_pda(
                 &autara_program_id,
-                &signer_pubkey,
+                curator_pubkey,
                 &supply_mint,
                 &collateral_mint,
-                0,
+                entry.index,
             );
 
             if account_exists(&arch_client, &market_pda).await {
                 tracing::info!(
-                    "Market {}/{} already exists at {:?}",
-                    supply_name,
-                    collateral_name,
+                    "Market '{}' [{}/{} idx={} curator={:?}] already exists at {:?}",
+                    label,
+                    entry.supply,
+                    entry.collateral,
+                    entry.index,
+                    curator_pubkey,
                     market_pda
                 );
                 continue;
             }
 
-            let market_ix = if let Some(ref config_override) = market_config_override {
-                let mut ix = config_override.clone();
-                ix.supply_oracle_config =
-                    OracleConfig::new_pyth(supply_feed_id.unwrap(), oracle_program_id);
-                ix.collateral_oracle_config =
-                    OracleConfig::new_pyth(collateral_feed_id.unwrap(), oracle_program_id);
-                ix
-            } else {
-                default_market_config(
-                    supply_feed_id.unwrap(),
-                    collateral_feed_id.unwrap(),
+            let create_ix = CreateMarketInstruction {
+                market_bump: 0,
+                index: entry.index,
+                ltv_config: entry.ltv_config.clone(),
+                max_utilisation_rate: entry
+                    .max_utilisation_rate
+                    .unwrap_or_else(|| 0.9.into()),
+                supply_oracle_config: OracleConfig::new_pyth(supply_feed_id, oracle_program_id),
+                collateral_oracle_config: OracleConfig::new_pyth(
+                    collateral_feed_id,
                     oracle_program_id,
-                )
+                ),
+                interest_rate: entry
+                    .interest_rate
+                    .clone()
+                    .unwrap_or_else(InterestRateCurveKind::new_adaptive),
+                lending_market_fee_in_bps: entry.lending_market_fee_in_bps.unwrap_or(500),
             };
 
-            tracing::info!("Creating market {}/{}...", supply_name, collateral_name);
-            match client
-                .create_market(market_ix, supply_mint, collateral_mint)
+            tracing::info!(
+                "Creating market '{}' [{}/{} idx={} curator={:?}]...",
+                label,
+                entry.supply,
+                entry.collateral,
+                entry.index,
+                curator_pubkey
+            );
+            let curator_client = client.with_signer(*curator_keypair);
+            match curator_client
+                .create_market(create_ix, supply_mint, collateral_mint)
                 .await
             {
                 Ok(market_pubkey) => {
                     tracing::info!(
-                        "Market {}/{} created at {:?}",
-                        supply_name,
-                        collateral_name,
+                        "Market '{}' created at {:?}",
+                        label,
                         market_pubkey
                     );
                 }
                 Err(e) => {
-                    tracing::error!(
-                        "Failed to create market {}/{}: {:?}",
-                        supply_name,
-                        collateral_name,
-                        e
-                    );
+                    tracing::error!("Failed to create market '{}': {:?}", label, e);
                 }
             }
         }
@@ -353,6 +453,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 "BTC" => Some(BTC_FEED),
                 "USDC" => Some(USDC_FEED),
                 "ETH" => Some(ETH_FEED),
+                "USDT" => Some(USDT_FEED),
                 _ => None,
             }?;
             Some(feed_hex.to_string())
@@ -382,11 +483,15 @@ async fn main() -> Result<(), anyhow::Error> {
         });
     }
 
-    // Build token minters from config (using token authority key)
+    // Build token minters from config (each mint uses its own authority).
     let mut minters = Vec::new();
     for (name, token) in tokens {
         let mint = parse_pubkey(&token.mint)?;
-        let minter = TokenMinter::from_existing(arch_client.clone(), token_authority_keypair, mint);
+        let (authority_keypair, _) = token_authorities
+            .get(name)
+            .ok_or_else(|| anyhow!("Missing mint authority for token {}", name))?;
+        let minter =
+            TokenMinter::from_existing(arch_client.clone(), *authority_keypair, mint);
         tracing::info!("Token minter for {} ({:?})", name, mint);
         minters.push(minter);
     }
