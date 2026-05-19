@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::Context;
 use arch_program::bitcoin::{key::Keypair, Network};
 use arch_sdk::{
@@ -12,6 +14,7 @@ use serde::{Deserialize, Serialize};
 pub const BTC_FEED: &str = "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43";
 pub const USDC_FEED: &str = "0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a";
 pub const ETH_FEED: &str = "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
+const ORACLE_PUSH_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub async fn fetch_and_push_feeds(
     client: &AsyncArchRpcClient,
@@ -22,7 +25,7 @@ pub async fn fetch_and_push_feeds(
 ) {
     let signer_pubkey = Pubkey::from_slice(&signer.x_only_public_key().0.serialize());
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
         let pyth_api_result = match fetch_pyth_price(feeds).await {
             Ok(ok) => ok,
             Err(err) => {
@@ -63,10 +66,18 @@ pub async fn fetch_and_push_feeds(
                 continue;
             }
         };
-        if let Err(err) =
-            build_and_send_tx(client, &signer_pubkey, signer, &ixs, bitcoin_network).await
+        match tokio::time::timeout(
+            ORACLE_PUSH_TIMEOUT,
+            build_and_send_tx(client, &signer_pubkey, signer, &ixs, bitcoin_network),
+        )
+        .await
         {
-            tracing::error!("Failed to send transaction: {:?}", err);
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!("Failed to send transaction: {:?}", err),
+            Err(_) => tracing::error!(
+                "Oracle push timed out after {:?}; continuing",
+                ORACLE_PUSH_TIMEOUT
+            ),
         }
     }
 }
