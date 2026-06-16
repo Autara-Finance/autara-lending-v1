@@ -1,0 +1,241 @@
+{
+  // ============================================================================
+  // AUTARA LENDING — NEW MARKET CONFIGURATION TEMPLATE
+  // ============================================================================
+  //
+  // This file documents every field needed to deploy a new Autara lending market.
+  // Copy this to a .json file (remove comments), fill in the values, and run:
+  //
+  //   cargo run --bin autara-cli -- \
+  //     --arch-node <RPC_URL> \
+  //     --signer <CURATOR_KEY_PATH> \
+  //     tx create-market \
+  //     --config <THIS_FILE>.json \
+  //     --supply-mint <SUPPLY_MINT_PUBKEY> \
+  //     --collateral-mint <COLLATERAL_MINT_PUBKEY>
+  //
+  // The signer key becomes the CURATOR of this market.
+  //
+  // ============================================================================
+
+  // --- MARKET INDEX ---
+  // Allows creating multiple markets for the same asset pair by the same curator.
+  // Use 0 for the first market, increment for additional markets with the same pair.
+  "index": 0,
+
+  // Auto-calculated by the CLI — leave as 0.
+  "marketBump": 0,
+
+  // --- LTV CONFIGURATION ---
+  // These control borrowing limits and liquidation thresholds.
+  "ltvConfig": {
+
+    // INPUT NEEDED: Maximum LTV ratio for new borrows (0.0 to 1.0)
+    // Example: 0.8 means borrowers can borrow up to 80% of their collateral value.
+    // Must be strictly less than unhealthyLtv.
+    // Lower = safer for lenders, but less capital-efficient for borrowers.
+    // Consider on-chain liquidity: illiquid collateral assets need lower maxLtv.
+    "maxLtv": "0.8",
+
+    // INPUT NEEDED: LTV at which a position becomes liquidatable (0.0 to 1.0)
+    // Must be greater than maxLtv.
+    // WARNING: This value can NEVER be lowered after market creation.
+    // The gap between maxLtv and unhealthyLtv is the borrower's safety buffer.
+    // Recommended: at least 5-10% gap above maxLtv.
+    "unhealthyLtv": "0.9",
+
+    // INPUT NEEDED: Bonus percentage paid to liquidators (0.001 to 0.10)
+    // Example: 0.05 = 5% bonus on collateral seized.
+    // Too low = liquidators won't bother. Too high = borrowers lose too much.
+    // CONSTRAINT: unhealthyLtv * (1 + liquidationBonus) must be <= 0.99
+    //   e.g., 0.90 * (1 + 0.05) = 0.945 <= 0.99 ✓
+    //   e.g., 0.95 * (1 + 0.10) = 1.045 > 0.99 ✗ (INVALID)
+    "liquidationBonus": "0.05"
+  },
+
+  // --- UTILIZATION CAP ---
+  // INPUT NEEDED: Maximum utilization rate before new borrows are blocked (0.0 to 0.99)
+  // This protects lenders by ensuring some liquidity remains for withdrawals.
+  // Note: withdrawals can still push utilization above this cap, but borrows cannot.
+  // 0.90 = 90% is a common starting point.
+  "maxUtilisationRate": "0.9",
+
+  // --- INTEREST RATE MODEL ---
+  // IMMUTABLE AFTER CREATION — choose carefully!
+  //
+  // Option A: Adaptive (recommended for most markets)
+  //   Auto-adjusts to target 90% utilization. Rate bounded between 1-200% APR.
+  //   Self-correcting: rate rises when utilization is high, falls when low.
+  //   Risk: market can brick if zero transactions occur for ~1.1 years at >90% util.
+  //
+  // Option B: Fixed
+  //   Constant borrow rate regardless of utilization.
+  //   Use for stable/predictable markets or promotional rates.
+  //
+  // Option C: Polyline
+  //   Custom piecewise-linear curve with up to 8 breakpoints.
+  //   Use for precise control over the utilization-to-rate relationship.
+  //
+  // Uncomment ONE of the following:
+
+  // --- Option A: Adaptive (recommended) ---
+  "interestRate": {
+    "type": "Adaptive",
+    "content": {
+      // Starts at 4% APR at 90% utilization, auto-adjusts from there.
+      // No configuration needed — uses protocol defaults.
+      "rateAtTarget": "0.000000001268391679"
+    }
+  },
+
+  // --- Option B: Fixed ---
+  // "interestRate": {
+  //   "type": "Fixed",
+  //   "content":
+  //     // INPUT NEEDED: Fixed rate per second as IFixedPoint string.
+  //     // To approximate from APY: rate_per_second ≈ ln(1 + apy) / seconds_per_year
+  //     // Example: 10% APY ≈ "0.000000003022265980"
+  //     "0.000000003022265980"
+  // },
+
+  // --- Option C: Polyline ---
+  // "interestRate": {
+  //   "type": "Polyline",
+  //   "content": {
+  //     // INPUT NEEDED: Array of (utilization_bps, rate_per_second) breakpoints.
+  //     // utilization_bps: 0 to 10000 (0% to 100%)
+  //     // Must be strictly increasing in both utilization and rate.
+  //     // Max 8 breakpoints.
+  //     //
+  //     // Example "kink" model: low rate until 80% util, then steep increase:
+  //     "points": [
+  //       [0,    "0"],
+  //       [8000, "0.000000001268391679"],
+  //       [9000, "0.000000006341958397"],
+  //       [10000, "0.000000031709791983"]
+  //     ]
+  //   }
+  // },
+
+  // --- FEE ON INTEREST ---
+  // INPUT NEEDED: Fee taken from borrower interest, in basis points (0 to 2000)
+  // 0 = no fee, 500 = 5%, 2000 = 20% (maximum)
+  // This fee is split between:
+  //   - Curator: receives (10000 - protocolFeeShareInBps) / 10000 of the fee
+  //   - Protocol: receives protocolFeeShareInBps / 10000 of the fee
+  // The protocol's share is set globally by the admin, not by the curator.
+  "lendingMarketFeeInBps": 500,
+
+  // --- SUPPLY ASSET ORACLE ---
+  // INPUT NEEDED: Price feed for the supply token (what lenders deposit).
+  // Prices are used as: price + confidence (upper bound) for valuing debt.
+  "supplyOracleConfig": {
+    "oracleProvider": {
+
+      // Use "Pyth" for production/testnet, "Chaos" for local testing only.
+      "type": "Pyth",
+      "content": {
+
+        // INPUT NEEDED: Pyth feed ID — 32-byte array
+        // Find feed IDs at: https://pyth.network/price-feeds
+        // Example (USDC/USD): [0,0,0,...] — replace with actual feed ID bytes
+        "feedId": [
+          0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0
+        ],
+
+        // INPUT NEEDED: Pyth program ID on Arch — the on-chain program that holds price data.
+        // This is the Pubkey of the Pyth receiver program deployed on Arch network.
+        "programId": [
+          0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0
+        ]
+      }
+    },
+    // Oracle validation — defaults are sensible for most feeds.
+    "validationConfig": {
+      // Max staleness in seconds. Transactions fail if price is older than this.
+      // 60s default. Increase for low-frequency feeds, decrease for volatile assets.
+      "maxAge": 60,
+      // Max confidence/price ratio. Rejects prices with too much uncertainty.
+      // 0.05 = 5% default. Tighten for stablecoins, loosen for volatile assets.
+      "minRelativeConfidence": "0.05"
+    }
+  },
+
+  // --- COLLATERAL ASSET ORACLE ---
+  // INPUT NEEDED: Price feed for the collateral token (what borrowers post).
+  // Prices are used as: price - confidence (lower bound) for valuing collateral.
+  "collateralOracleConfig": {
+    "oracleProvider": {
+
+      "type": "Pyth",
+      "content": {
+
+        // INPUT NEEDED: Pyth feed ID for the collateral asset.
+        // Example (BTC/USD): [0,0,0,...] — replace with actual feed ID bytes
+        "feedId": [
+          0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0
+        ],
+
+        // INPUT NEEDED: Same Pyth program ID as above (usually the same for all feeds).
+        "programId": [
+          0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0
+        ]
+      }
+    },
+    "validationConfig": {
+      "maxAge": 60,
+      "minRelativeConfidence": "0.05"
+    }
+  }
+
+  // ============================================================================
+  // ADDITIONAL INFO NEEDED (passed as CLI args, not in this file):
+  // ============================================================================
+  //
+  // --supply-mint <PUBKEY>
+  //   The token mint address of the supply asset (e.g., USDC).
+  //   Must already exist on-chain.
+  //
+  // --collateral-mint <PUBKEY>
+  //   The token mint address of the collateral asset (e.g., BTC).
+  //   Must already exist on-chain.
+  //
+  // --signer <KEY_PATH>
+  //   Path to the curator's keypair file. This wallet becomes the market curator
+  //   and is the only one who can update config, redeem curator fees, etc.
+  //
+  // ============================================================================
+  // POST-CREATION: Set via UpdateConfig (not part of initial creation):
+  // ============================================================================
+  //
+  // maxSupplyAtoms:
+  //   Defaults to u64::MAX (unlimited). STRONGLY RECOMMENDED to tighten this
+  //   after creation to limit exposure relative to on-chain liquidity.
+  //   Set conservatively and increase as liquidity grows.
+  //
+  // ============================================================================
+  // VALIDATION RULES (the program will reject invalid configs):
+  // ============================================================================
+  //
+  // 1. maxLtv < unhealthyLtv
+  // 2. unhealthyLtv * (1 + liquidationBonus) <= 0.99
+  // 3. liquidationBonus between 0.001 (0.1%) and 0.10 (10%)
+  // 4. lendingMarketFeeInBps <= 2000
+  // 5. maxUtilisationRate <= 0.99
+  // 6. Interest rate curve must be valid (no negative fixed rates, etc.)
+  // 7. Oracle feed IDs must match on-chain accounts
+  // 8. GlobalConfig must already exist on-chain
+  //
+}

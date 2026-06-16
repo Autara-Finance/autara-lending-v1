@@ -149,6 +149,9 @@ fn pyth_feed_for_token(name: &str) -> Option<[u8; 32]> {
         "USDC" => USDC_FEED,
         "ETH" => ETH_FEED,
         "USDT" => USDT_FEED,
+        // aUSD is a USD-pegged test stablecoin with no feed of its own;
+        // value it against the USDC/USD feed (~$1).
+        "AUSD" => USDC_FEED,
         _ => return None,
     };
     let hex_str = feed_hex.strip_prefix("0x").unwrap_or(feed_hex);
@@ -446,7 +449,7 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     // Spawn Pyth feed pusher in background
-    let feeds: Vec<String> = token_names
+    let mut feeds: Vec<String> = token_names
         .iter()
         .filter_map(|name| {
             let feed_hex = match name.to_uppercase().as_str() {
@@ -454,11 +457,16 @@ async fn main() -> Result<(), anyhow::Error> {
                 "USDC" => Some(USDC_FEED),
                 "ETH" => Some(ETH_FEED),
                 "USDT" => Some(USDT_FEED),
+                // aUSD shares the USDC/USD feed (USD-pegged test stablecoin).
+                "AUSD" => Some(USDC_FEED),
                 _ => None,
             }?;
             Some(feed_hex.to_string())
         })
         .collect();
+    // De-duplicate: multiple tokens (e.g. USDC + aUSD) may share one feed.
+    feeds.sort();
+    feeds.dedup();
     if !feeds.is_empty() {
         tracing::info!("Spawning Pyth feed pusher for {} feeds", feeds.len());
         let pusher_client = arch_client.clone();

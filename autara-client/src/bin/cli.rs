@@ -877,6 +877,12 @@ async fn handle_token_command(
                     authority_key_file: "keys/token-usdt-authority.key",
                     decimals: 6,
                 },
+                TokenDef {
+                    name: "aUSD",
+                    key_file: "keys/token-ausd.key",
+                    authority_key_file: "keys/token-ausd-authority.key",
+                    decimals: 6,
+                },
             ];
 
             println!("=== Token Setup ===");

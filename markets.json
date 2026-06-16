@@ -95,6 +95,30 @@
         "unhealthyLtv": "0.94",
         "liquidationBonus": "0.05"
       }
+    },
+    {
+      "name": "aUSD-BTC (77% LTV)",
+      "supply": "aUSD",
+      "collateral": "BTC",
+      "curatorKeyFile": "keys/curator-conservative.key",
+      "index": 0,
+      "ltvConfig": {
+        "maxLtv": "0.77",
+        "unhealthyLtv": "0.86",
+        "liquidationBonus": "0.05"
+      }
+    },
+    {
+      "name": "aUSD-BTC (77% LTV) reverse",
+      "supply": "BTC",
+      "collateral": "aUSD",
+      "curatorKeyFile": "keys/curator-conservative.key",
+      "index": 0,
+      "ltvConfig": {
+        "maxLtv": "0.77",
+        "unhealthyLtv": "0.86",
+        "liquidationBonus": "0.05"
+      }
     }
   ]
 }
