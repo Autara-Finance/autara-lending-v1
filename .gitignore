@@ -9,3 +9,4 @@ user.key
 .DS_Store
 .env
 docs/
+backups/
