@@ -8,3 +8,8 @@ authority.key
 user.key
 .DS_Store
 .env
+
+# Deploy tooling: gitignored key directories (autara-deploy). NEVER commit keys.
+.keys-testnet/
+.keys-mainnet/
+.keys-*/
