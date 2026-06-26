@@ -5,9 +5,10 @@
 //! networks are `network`, `arch_rpc_url`, the `*_KEY_PATH` files, and the
 //! token mints — mirroring the CLAMM deploy tool's convention.
 //!
-//! Phase 1 is TESTNET-FIRST: `localnet` and `testnet` are wired up; `mainnet`
-//! is intentionally left unconfigured (the variant exists so it can be added
-//! later without restructuring).
+//! `localnet`, `testnet`, and `mainnet` are all wired up. Mainnet defaults to
+//! the public Arch mainnet RPC and the Bitcoin mainnet signing network; a real
+//! mainnet run is still gated behind the CI typed-confirmation (`DEPLOY MAINNET`
+//! in `_autara-action.yml`) and never generates keys here.
 
 use std::str::FromStr;
 
@@ -22,8 +23,6 @@ use arch_sdk::Config as ArchConfig;
 pub enum Network {
     Localnet,
     Testnet,
-    /// Phase 2. The variant exists so mainnet can be wired up later, but the
-    /// tool refuses to derive any mainnet defaults today.
     Mainnet,
 }
 
@@ -37,21 +36,24 @@ impl Network {
     }
 
     /// Default Arch RPC endpoint for the network (overridable via `ARCH_RPC_URL`).
+    /// The mainnet endpoint is the public Arch RPC documented in the network's
+    /// book (mirrors the testnet `rpc.testnet.arch.network` convention).
     pub fn default_rpc_url(&self) -> Result<String> {
         match self {
             Network::Localnet => Ok("http://localhost:9002/".to_string()),
             Network::Testnet => Ok("https://rpc.testnet.arch.network".to_string()),
-            Network::Mainnet => bail!("mainnet RPC is not configured yet (Phase 2)"),
+            Network::Mainnet => Ok("https://rpc.mainnet.arch.network".to_string()),
         }
     }
 
     /// Bitcoin network used by `build_and_sign_transaction` / `ProgramDeployer`.
-    /// Testnet uses `Testnet4`, matching the repo's existing testnet deploy.
+    /// Testnet uses `Testnet4`, matching the repo's existing testnet deploy;
+    /// mainnet uses `Bitcoin` (matches `arch_sdk::Config::mainnet`).
     pub fn bitcoin_network(&self) -> Result<BitcoinNetwork> {
         match self {
             Network::Localnet => Ok(BitcoinNetwork::Regtest),
             Network::Testnet => Ok(BitcoinNetwork::Testnet4),
-            Network::Mainnet => bail!("mainnet signing is not supported yet (Phase 2)"),
+            Network::Mainnet => Ok(BitcoinNetwork::Bitcoin),
         }
     }
 
@@ -67,18 +69,50 @@ impl FromStr for Network {
             "localnet" | "local" | "regtest" | "dev" => Ok(Network::Localnet),
             "testnet" | "devnet" => Ok(Network::Testnet),
             "mainnet" | "mainnet-beta" => Ok(Network::Mainnet),
-            other => bail!("unknown NETWORK '{other}' (expected localnet|testnet)"),
+            other => bail!("unknown NETWORK '{other}' (expected localnet|testnet|mainnet)"),
         }
     }
 }
 
-/// A token mint to record in the deployment artifact (and, later, to wire into
-/// market-creation steps). Parsed from `TOKENS=LABEL:MINT_HEX:DECIMALS,...`.
+/// A token mint to record in the deployment artifact and to wire into the
+/// market-creation steps. Parsed from `TOKENS=LABEL:MINT_HEX:DECIMALS,...`.
 #[derive(Debug, Clone)]
 pub struct TokenConfig {
     pub label: String,
     pub mint: Pubkey,
     pub decimals: u8,
+}
+
+/// Pyth price-feed ids (32-byte, hex) for the labels Autara markets use. These
+/// mirror the constants in `autara-pyth` (`BTC_FEED` / `ETH_FEED` / `USDC_FEED`)
+/// and the `pyth_feed_for_token` mapping in `autara-server`; they are duplicated
+/// here as small constants so the deploy tool avoids the heavy `autara-pyth`
+/// dependency (reqwest etc.). A market can only be created for a token whose
+/// label resolves to a feed here.
+const BTC_FEED: &str = "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43";
+const USDC_FEED: &str = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a";
+const ETH_FEED: &str = "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
+
+/// Map a token label to its Pyth feed id (32 bytes). Case-insensitive; returns
+/// `None` for labels without a known feed (those pairs are skipped).
+pub fn pyth_feed_for_label(label: &str) -> Option<[u8; 32]> {
+    let hex_str = match label.trim().to_uppercase().as_str() {
+        "BTC" => BTC_FEED,
+        "USDC" => USDC_FEED,
+        "ETH" => ETH_FEED,
+        _ => return None,
+    };
+    let mut id = [0u8; 32];
+    hex::decode_to_slice(hex_str, &mut id).ok()?;
+    Some(id)
+}
+
+/// A market to create: a supply/collateral token pair, identified by the labels
+/// used in `TOKENS`. Parsed from `MARKET_PAIRS=SUPPLY/COLLATERAL,...`.
+#[derive(Debug, Clone)]
+pub struct MarketPair {
+    pub supply_label: String,
+    pub collateral_label: String,
 }
 
 /// Fully-resolved deploy configuration, parsed once from the environment.
@@ -106,8 +140,14 @@ pub struct DeployConfig {
     /// Protocol fee share, in basis points.
     pub protocol_fee_share_bps: u16,
 
-    /// Token mints to record (and, in a later phase, to build markets from).
+    /// Token mints to record and to build markets from.
     pub tokens: Vec<TokenConfig>,
+
+    /// Token pairs (by label) to create markets for. Empty => derive every
+    /// ordered pair of configured tokens that has a known Pyth feed.
+    pub market_pairs: Vec<MarketPair>,
+    /// Curator/lending fee applied to each created market, in basis points.
+    pub lending_market_fee_bps: u16,
 
     pub use_faucet: bool,
     pub output_path: String,
@@ -191,6 +231,26 @@ fn parse_tokens(raw: &str) -> Result<Vec<TokenConfig>> {
     Ok(tokens)
 }
 
+/// Parse "USDC/BTC,USDC/ETH" into market pairs (supply/collateral labels).
+fn parse_market_pairs(raw: &str) -> Result<Vec<MarketPair>> {
+    let mut pairs = Vec::new();
+    for entry in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let (supply, collateral) = entry.split_once('/').ok_or_else(|| {
+            anyhow!("invalid MARKET_PAIRS entry '{entry}' (expected SUPPLY/COLLATERAL)")
+        })?;
+        let supply_label = supply.trim().to_string();
+        let collateral_label = collateral.trim().to_string();
+        if supply_label.is_empty() || collateral_label.is_empty() {
+            bail!("invalid MARKET_PAIRS entry '{entry}' (empty label)");
+        }
+        pairs.push(MarketPair {
+            supply_label,
+            collateral_label,
+        });
+    }
+    Ok(pairs)
+}
+
 impl DeployConfig {
     pub fn from_env() -> Result<Self> {
         let network: Network = env_or("NETWORK", "localnet").parse()?;
@@ -202,6 +262,11 @@ impl DeployConfig {
 
         let tokens = match env_opt("TOKENS") {
             Some(raw) => parse_tokens(&raw)?,
+            None => Vec::new(),
+        };
+
+        let market_pairs = match env_opt("MARKET_PAIRS") {
+            Some(raw) => parse_market_pairs(&raw)?,
             None => Vec::new(),
         };
 
@@ -223,6 +288,9 @@ impl DeployConfig {
 
             tokens,
 
+            market_pairs,
+            lending_market_fee_bps: env_parse("LENDING_MARKET_FEE_BPS", 100u16)?,
+
             use_faucet: env_bool("USE_FAUCET", network.has_faucet())?,
             output_path: env_or(
                 "OUTPUT_PATH",
@@ -231,6 +299,40 @@ impl DeployConfig {
         };
 
         Ok(cfg)
+    }
+
+    /// Look up a configured token by (case-insensitive) label.
+    pub fn token_by_label(&self, label: &str) -> Option<&TokenConfig> {
+        self.tokens
+            .iter()
+            .find(|t| t.label.eq_ignore_ascii_case(label))
+    }
+
+    /// The market pairs to actually create. When `MARKET_PAIRS` is unset, derive
+    /// every ordered pair of configured tokens that has a known Pyth feed
+    /// (mirrors `autara-server`'s all-pairs bootstrap).
+    pub fn effective_market_pairs(&self) -> Vec<MarketPair> {
+        if !self.market_pairs.is_empty() {
+            return self.market_pairs.clone();
+        }
+        let mut pairs = Vec::new();
+        for supply in &self.tokens {
+            for collateral in &self.tokens {
+                if supply.label == collateral.label {
+                    continue;
+                }
+                if pyth_feed_for_label(&supply.label).is_none()
+                    || pyth_feed_for_label(&collateral.label).is_none()
+                {
+                    continue;
+                }
+                pairs.push(MarketPair {
+                    supply_label: supply.label.clone(),
+                    collateral_label: collateral.label.clone(),
+                });
+            }
+        }
+        pairs
     }
 
     /// Build the Arch SDK config for this deploy (RPC url + signing network).

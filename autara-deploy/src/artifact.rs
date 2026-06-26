@@ -32,6 +32,8 @@ pub struct DeploymentArtifact {
 
     pub tokens: Vec<TokenRecord>,
 
+    pub markets: Vec<MarketRecord>,
+
     pub transactions: Vec<TxRecord>,
 }
 
@@ -40,6 +42,19 @@ pub struct TokenRecord {
     pub label: String,
     pub mint: String,
     pub decimals: u8,
+}
+
+/// A market created (or already present) during the deploy. Addresses only.
+#[derive(Debug, Serialize)]
+pub struct MarketRecord {
+    pub supply_label: String,
+    pub collateral_label: String,
+    pub supply_mint: String,
+    pub collateral_mint: String,
+    pub index: u8,
+    pub market: String,
+    /// `true` if this run created the market, `false` if it already existed.
+    pub created: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -61,6 +76,10 @@ impl DeploymentArtifact {
             step: step.to_string(),
             txid,
         });
+    }
+
+    pub fn record_market(&mut self, market: MarketRecord) {
+        self.markets.push(market);
     }
 
     pub fn write(&self, path: &str) -> Result<()> {

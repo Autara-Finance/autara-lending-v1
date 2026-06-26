@@ -4,9 +4,10 @@
 # flow. The three user-facing entry points are thin dispatch wrappers that call
 # this with a different `action`:
 #
-#   autara-deploy.yml      -> action: deploy
-#   autara-initialize.yml  -> action: initialize
-#   autara-upgrade.yml     -> action: upgrade
+#   autara-deploy.yml        -> action: deploy
+#   autara-initialize.yml    -> action: initialize
+#   autara-upgrade.yml       -> action: upgrade
+#   autara-setup-markets.yml -> action: setup-markets
 #
 # Keeping one engine (instead of three near-identical workflows) means the
 # critical bits cannot drift: the program-id derive -> sync -> rebuild ->
@@ -24,10 +25,15 @@
 #   upgrade      STEP_DEPLOY_PROGRAM=true (oracle/init off) -> reuse the EXISTING
 #                program keypair (program id / autara_program::id() unchanged),
 #                build the new ELF, and re-upload via the SDK ProgramDeployer.
+#   setup-markets STEP_TOKEN_SETUP=true + STEP_CREATE_MARKET=true (deploy/init
+#                off) -> ensure the configured APL mints exist, then create a
+#                lending market per MARKET_PAIRS. Requires the program AND the
+#                global config to already exist. Analogous to CLAMM's seed step.
 #
-# Divergences from CLAMM's engine (intentional, see Phase 3 notes):
+# Divergences from CLAMM's engine (intentional):
 #   - NO IDL build/publish stage: the autara-deploy crate has no IDL tooling.
-#   - NO seed-liquidity action: Autara has no market/seed step implemented yet.
+#   - setup-markets sends instructions only (no SBF/ELF build): the mints are
+#     created out-of-band (autara-cli) and markets reuse the deployed program.
 #   - The oracle program needs no program-id sync (position-independent).
 #
 # Safety: real runs (dry_run=false) require the per-network GitHub Environment
@@ -39,7 +45,7 @@ on:
   workflow_call:
     inputs:
       action:
-        description: 'deploy | initialize | upgrade'
+        description: 'deploy | initialize | upgrade | setup-markets'
         type: string
         required: true
       network:
@@ -215,6 +221,7 @@ jobs:
           # shellcheck disable=SC1091
           source autara-deploy/scripts/ci-load-env.sh
           export STEP_DEPLOY_PROGRAM=true STEP_DEPLOY_ORACLE=true STEP_INIT_CONFIG=false
+          export STEP_TOKEN_SETUP=false STEP_CREATE_MARKET=false
           mkdir -p deployments
           if [ "$DRY_RUN" = "true" ]; then
             echo "DRY RUN: no transactions will be sent."
@@ -232,6 +239,7 @@ jobs:
           # shellcheck disable=SC1091
           source autara-deploy/scripts/ci-load-env.sh
           export STEP_DEPLOY_PROGRAM=true STEP_DEPLOY_ORACLE=false STEP_INIT_CONFIG=false
+          export STEP_TOKEN_SETUP=false STEP_CREATE_MARKET=false
           export OUTPUT_PATH="deployments/${NETWORK}-upgrade.json"
           mkdir -p deployments
           if [ "$DRY_RUN" = "true" ]; then
@@ -250,12 +258,35 @@ jobs:
           # shellcheck disable=SC1091
           source autara-deploy/scripts/ci-load-env.sh
           export STEP_DEPLOY_PROGRAM=false STEP_DEPLOY_ORACLE=false STEP_INIT_CONFIG=true
+          export STEP_TOKEN_SETUP=false STEP_CREATE_MARKET=false
           mkdir -p deployments
           if [ "$DRY_RUN" = "true" ]; then
             echo "DRY RUN: no transactions will be sent."
             target/debug/autara-deploy --dry-run
           else
             echo "REAL initialize on ${NETWORK} (program must already be deployed): transactions WILL be sent."
+            target/debug/autara-deploy
+          fi
+
+      # ---- setup-markets: ensure token mints + create the configured markets -
+      # (program + global config must ALREADY exist). Mirrors CLAMM's separate
+      # seed action: market creation is split out from deploy/initialize so it
+      # can be (re)run idempotently without redeploying or recreating config.
+      - name: Setup markets
+        if: ${{ inputs.action == 'setup-markets' }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source autara-deploy/scripts/ci-load-env.sh
+          export STEP_DEPLOY_PROGRAM=false STEP_DEPLOY_ORACLE=false STEP_INIT_CONFIG=false
+          export STEP_TOKEN_SETUP=true STEP_CREATE_MARKET=true
+          export OUTPUT_PATH="deployments/${NETWORK}-markets.json"
+          mkdir -p deployments
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "DRY RUN: previewing token-setup + market derived addresses; no transactions will be sent."
+            target/debug/autara-deploy --dry-run
+          else
+            echo "REAL setup-markets on ${NETWORK} (program + global config must exist): transactions WILL be sent."
             target/debug/autara-deploy
           fi
 
@@ -266,6 +297,7 @@ jobs:
           set -euo pipefail
           OUT="deployments/${NETWORK}.json"
           UPG_OUT="deployments/${NETWORK}-upgrade.json"
+          MKT_OUT="deployments/${NETWORK}-markets.json"
           {
             echo "## Autara ${ACTION} — ${NETWORK}"
             echo ""
@@ -274,7 +306,7 @@ jobs:
             echo "- program_id: \`${PROGRAM_ID:-unknown}\`"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
-          for f in "$OUT" "$UPG_OUT"; do
+          for f in "$OUT" "$UPG_OUT" "$MKT_OUT"; do
             if [ -f "$f" ]; then
               echo "### Artifact \`$f\`" >> "$GITHUB_STEP_SUMMARY"
               echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -292,4 +324,5 @@ jobs:
           path: |
             deployments/${{ inputs.network }}.json
             deployments/${{ inputs.network }}-upgrade.json
+            deployments/${{ inputs.network }}-markets.json
           if-no-files-found: warn
