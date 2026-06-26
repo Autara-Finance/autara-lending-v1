@@ -87,8 +87,12 @@ jobs:
           fi
           echo "Mainnet real-run confirmation accepted for ${ACTION}."
 
-      - name: Install Rust 1.84.1
-        uses: dtolnay/rust-toolchain@1.84.1
+      # Host toolchain for building the `autara-deploy` tool. Must be >= 1.85 so
+      # Cargo understands the `edition2024` feature pulled in by transitive deps
+      # (e.g. getrandom 0.4.1 via tempfile/uuid). This is independent of the
+      # SBF/cargo-build-sbf toolchain installed below for the on-chain ELF build.
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@1.85.1
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

@@ -38,9 +38,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Pinned to match the version cargo-build-sbf / solana 2.2.14 expects.
-      - name: Install Rust 1.84.1
-        uses: dtolnay/rust-toolchain@1.84.1
+      # Host toolchain for `cargo fmt` / `cargo check -p autara-deploy`. Must be
+      # >= 1.85 so Cargo understands the `edition2024` feature pulled in by
+      # transitive deps (e.g. time-core 0.1.8). This is independent of the
+      # SBF/cargo-build-sbf toolchain used for the on-chain ELF build.
+      - name: Install Rust 1.85.1
+        uses: dtolnay/rust-toolchain@1.85.1
         with:
           components: rustfmt
 
