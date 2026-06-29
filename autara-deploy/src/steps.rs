@@ -13,7 +13,7 @@ use autara_lib::pda::find_market_pda;
 use autara_lib::state::market_config::LtvConfig;
 
 use crate::artifact::{DeploymentArtifact, MarketRecord};
-use crate::config::{pyth_feed_for_label, MarketPair, TokenConfig};
+use crate::config::{pyth_feed_for_label, MarketPair, MarketParams, TokenConfig};
 use crate::rpc::RpcContext;
 
 /// Create the protocol's global config PDA (admin + fee receiver + fee share).
@@ -75,12 +75,18 @@ pub async fn ensure_token_mints(ctx: &RpcContext, tokens: &[TokenConfig]) -> Res
     Ok(())
 }
 
-/// Default market parameters, mirroring `autara-server`'s `default_market_config`
-/// (max_ltv 0.8 / unhealthy 0.9 / liquidation bonus 0.05, 90% max utilisation,
-/// adaptive interest-rate curve). The fee in bps is the only env-tunable knob.
+/// Build a `CreateMarketInstruction` from the env-configured market parameters.
+///
+/// `MarketParams::default()` reproduces `autara-server`'s `default_market_config`
+/// (max_ltv 0.8 / unhealthy 0.9 / liquidation bonus 0.05, 90% max utilisation),
+/// so an unset env yields byte-for-byte identical instructions (the `f64` values
+/// flow through `IFixedPoint::from_num` exactly as the old literals did — see
+/// `tests::default_params_match_legacy_hardcoded_values`). The interest-rate
+/// curve is always adaptive (not parameterized).
 fn build_create_market_instruction(
     index: u8,
     lending_market_fee_bps: u16,
+    params: MarketParams,
     supply_oracle: OracleConfig,
     collateral_oracle: OracleConfig,
 ) -> CreateMarketInstruction {
@@ -89,11 +95,11 @@ fn build_create_market_instruction(
         market_bump: 0,
         index,
         ltv_config: LtvConfig {
-            max_ltv: IFixedPoint::from_num(0.8),
-            unhealthy_ltv: IFixedPoint::from_num(0.9),
-            liquidation_bonus: IFixedPoint::from_num(0.05),
+            max_ltv: IFixedPoint::from_num(params.max_ltv),
+            unhealthy_ltv: IFixedPoint::from_num(params.unhealthy_ltv),
+            liquidation_bonus: IFixedPoint::from_num(params.liquidation_bonus),
         },
-        max_utilisation_rate: IFixedPoint::from_num(0.9),
+        max_utilisation_rate: IFixedPoint::from_num(params.max_utilisation_rate),
         supply_oracle_config: supply_oracle,
         collateral_oracle_config: collateral_oracle,
         interest_rate: InterestRateCurveKind::new_adaptive(),
@@ -135,6 +141,7 @@ pub async fn create_market(
     supply: &TokenConfig,
     collateral: &TokenConfig,
     lending_market_fee_bps: u16,
+    market_params: MarketParams,
     index: u8,
     artifact: &mut DeploymentArtifact,
 ) -> Result<Pubkey> {
@@ -170,6 +177,7 @@ pub async fn create_market(
     let create_market = build_create_market_instruction(
         index,
         lending_market_fee_bps,
+        market_params,
         OracleConfig::new_pyth(supply_feed, oracle_program_id),
         OracleConfig::new_pyth(collateral_feed, oracle_program_id),
     );
@@ -195,4 +203,24 @@ pub async fn create_market(
         created: true,
     });
     Ok(market_pda)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arch_program::pubkey::Pubkey;
+
+    /// Proof that making the market params env-configurable did NOT change
+    /// testnet behavior: with `MarketParams::default()` the built instruction is
+    /// byte-for-byte identical to the previously hardcoded values
+    /// (max_ltv 0.8 / unhealthy 0.9 / liquidation_bonus 0.05 / max_util 0.9).
+    #[test]
+    fn default_params_match_legacy_hardcoded_values() {
+        let oracle = OracleConfig::new_pyth([0u8; 32], Pubkey::new_from_array([0u8; 32]));
+        let ix = build_create_market_instruction(0, 100, MarketParams::default(), oracle, oracle);
+        assert_eq!(ix.ltv_config.max_ltv, IFixedPoint::from_num(0.8));
+        assert_eq!(ix.ltv_config.unhealthy_ltv, IFixedPoint::from_num(0.9));
+        assert_eq!(ix.ltv_config.liquidation_bonus, IFixedPoint::from_num(0.05));
+        assert_eq!(ix.max_utilisation_rate, IFixedPoint::from_num(0.9));
+    }
 }

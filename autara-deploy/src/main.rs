@@ -309,6 +309,32 @@ fn main() -> Result<()> {
         println!("program_id_guard:  ok (matches autara_program::id())");
     }
 
+    // Mainnet-only footgun guards: no faucet on mainnet, and the configured token
+    // mints must not still be the testnet PLACEHOLDER mints shipped in
+    // autara.mainnet.env. Fatal on a REAL run; warn-only in dry-run so the
+    // preview still completes (a real run would be refused).
+    let mainnet_violations = cfg.mainnet_safety_violations();
+    if mainnet_violations.is_empty() {
+        if cfg.network == Network::Mainnet {
+            println!("mainnet_guard:     ok (no faucet, no placeholder mints)");
+        }
+    } else {
+        eprintln!(
+            "MAINNET SAFETY: {} check(s) failed:",
+            mainnet_violations.len()
+        );
+        for v in &mainnet_violations {
+            eprintln!("  - {v}");
+        }
+        if !dry_run {
+            bail!(
+                "refusing a REAL mainnet run: {} safety check(s) failed (see above)",
+                mainnet_violations.len()
+            );
+        }
+        eprintln!("  (dry-run: warnings only — a REAL run would be REFUSED by these guards)");
+    }
+
     let (global_config_pda, _) = autara_lib::pda::find_global_config_pda(&program_pubkey);
     println!("global_config_pda: {global_config_pda}");
 
@@ -326,6 +352,13 @@ fn main() -> Result<()> {
         println!("curator:           {curator}");
         println!("oracle_program_id: {oracle_pubkey}");
         println!("lending_fee_bps:   {}", cfg.lending_market_fee_bps);
+        println!(
+            "market_params:     max_ltv={} unhealthy_ltv={} liquidation_bonus={} max_utilisation={}",
+            cfg.market_params.max_ltv,
+            cfg.market_params.unhealthy_ltv,
+            cfg.market_params.liquidation_bonus,
+            cfg.market_params.max_utilisation_rate
+        );
         if market_pairs.is_empty() {
             println!(
                 "markets:           (none — set MARKET_PAIRS or configure TOKENS with Pyth feeds)"
@@ -528,6 +561,7 @@ fn main() -> Result<()> {
                 supply,
                 collateral,
                 cfg.lending_market_fee_bps,
+                cfg.market_params,
                 0,
                 &mut artifact,
             ))?;

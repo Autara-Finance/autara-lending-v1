@@ -89,6 +89,13 @@ pub struct TokenConfig {
 /// here as small constants so the deploy tool avoids the heavy `autara-pyth`
 /// dependency (reqwest etc.). A market can only be created for a token whose
 /// label resolves to a feed here.
+///
+/// DRIFT RISK: these are duplicated by hand from `autara-pyth`. There is no
+/// compile-time link, so if the canonical feed ids change upstream they MUST be
+/// updated here too. `tests::pyth_feed_constants_are_valid` only guards the
+/// constants' shape (valid 32-byte hex, pairwise-distinct) — it cannot detect
+/// divergence from `autara-pyth` without pulling that crate in (deliberately
+/// avoided). Re-confirm these against `autara-pyth` before a mainnet run.
 const BTC_FEED: &str = "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43";
 const USDC_FEED: &str = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a";
 const ETH_FEED: &str = "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
@@ -113,6 +120,36 @@ pub fn pyth_feed_for_label(label: &str) -> Option<[u8; 32]> {
 pub struct MarketPair {
     pub supply_label: String,
     pub collateral_label: String,
+}
+
+/// Economic parameters applied to every created market. The defaults are the
+/// values previously hardcoded in `steps.rs` (and mirror `autara-server`'s
+/// `default_market_config`), so leaving the env knobs unset reproduces the old
+/// behavior byte-for-byte. Mainnet should set CONFIRMED values via the env file
+/// rather than relying on these defaults. The interest-rate curve stays adaptive
+/// (not parameterized here).
+///
+/// Stored as `f64` and converted to `IFixedPoint` via `from_num` at instruction
+/// build time, exactly as the old hardcoded literals were — see
+/// `steps::build_create_market_instruction`.
+#[derive(Debug, Clone, Copy)]
+pub struct MarketParams {
+    pub max_ltv: f64,
+    pub unhealthy_ltv: f64,
+    pub liquidation_bonus: f64,
+    pub max_utilisation_rate: f64,
+}
+
+impl Default for MarketParams {
+    fn default() -> Self {
+        // EXACTLY the values previously hardcoded in `build_create_market_instruction`.
+        MarketParams {
+            max_ltv: 0.8,
+            unhealthy_ltv: 0.9,
+            liquidation_bonus: 0.05,
+            max_utilisation_rate: 0.9,
+        }
+    }
 }
 
 /// Fully-resolved deploy configuration, parsed once from the environment.
@@ -148,10 +185,23 @@ pub struct DeployConfig {
     pub market_pairs: Vec<MarketPair>,
     /// Curator/lending fee applied to each created market, in basis points.
     pub lending_market_fee_bps: u16,
+    /// Economic parameters (LTV / utilisation) applied to every created market.
+    pub market_params: MarketParams,
 
     pub use_faucet: bool,
     pub output_path: String,
 }
+
+/// Token mint hexes shipped as PLACEHOLDERS in `autara.mainnet.env` (they are the
+/// testnet mints). A REAL mainnet run must replace these with the genuine mainnet
+/// APL mints; the mainnet preflight refuses to run while any of them is still
+/// configured. Keep this list in sync with the `TOKENS=` line in
+/// `autara-deploy/scripts/autara.mainnet.env`.
+const PLACEHOLDER_MINT_HEXES: [&str; 3] = [
+    "36a97410055bbbdc52b421d0c95f76d85eca066b83db8b14f64665b178c93d8b",
+    "7250792453cc3a0bd015778f240dd50b552c48c153b7b83e3ef0c441aff9483c",
+    "a80fa79ee82952b0a127f50e7d469dae1a51315d4267ca38d7907ad5df5cb3cb",
+];
 
 fn env_opt(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
@@ -290,6 +340,21 @@ impl DeployConfig {
 
             market_pairs,
             lending_market_fee_bps: env_parse("LENDING_MARKET_FEE_BPS", 100u16)?,
+            market_params: MarketParams {
+                max_ltv: env_parse("MARKET_MAX_LTV", MarketParams::default().max_ltv)?,
+                unhealthy_ltv: env_parse(
+                    "MARKET_UNHEALTHY_LTV",
+                    MarketParams::default().unhealthy_ltv,
+                )?,
+                liquidation_bonus: env_parse(
+                    "MARKET_LIQUIDATION_BONUS",
+                    MarketParams::default().liquidation_bonus,
+                )?,
+                max_utilisation_rate: env_parse(
+                    "MARKET_MAX_UTILISATION",
+                    MarketParams::default().max_utilisation_rate,
+                )?,
+            },
 
             use_faucet: env_bool("USE_FAUCET", network.has_faucet())?,
             output_path: env_or(
@@ -306,6 +371,48 @@ impl DeployConfig {
         self.tokens
             .iter()
             .find(|t| t.label.eq_ignore_ascii_case(label))
+    }
+
+    /// Mainnet-only safety checks that must NEVER pass on a real run with an
+    /// unsafe config. Returns a human-readable message per violation (empty on a
+    /// safe config or any non-mainnet network). The caller decides severity:
+    /// these are hard failures on a REAL run and warnings on `--dry-run`.
+    ///
+    /// Catches the two mainnet footguns:
+    ///   1. `USE_FAUCET=true` — there is no faucet on mainnet; the deployer +
+    ///      admin must be funded out-of-band.
+    ///   2. token mints still equal to the testnet PLACEHOLDER mints shipped in
+    ///      `autara.mainnet.env` — a real run must use the genuine mainnet APL
+    ///      mints, never the testnet placeholders.
+    pub fn mainnet_safety_violations(&self) -> Vec<String> {
+        let mut violations = Vec::new();
+        if self.network != Network::Mainnet {
+            return violations;
+        }
+
+        if self.use_faucet {
+            violations.push(
+                "USE_FAUCET is true but mainnet has no faucet — set USE_FAUCET=false and fund \
+                 the deployer + admin out-of-band"
+                    .to_string(),
+            );
+        }
+
+        let placeholders: Vec<Pubkey> = PLACEHOLDER_MINT_HEXES
+            .iter()
+            .filter_map(|h| Pubkey::from_str(h).ok())
+            .collect();
+        for token in &self.tokens {
+            if placeholders.contains(&token.mint) {
+                violations.push(format!(
+                    "token '{}' mint {} is still the TESTNET PLACEHOLDER — set the real mainnet \
+                     APL mint for '{}' in autara.mainnet.env (TOKENS=)",
+                    token.label, token.mint, token.label
+                ));
+            }
+        }
+
+        violations
     }
 
     /// The market pairs to actually create. When `MARKET_PAIRS` is unset, derive
@@ -348,5 +455,117 @@ impl DeployConfig {
             arch_node_url: self.arch_rpc_url.clone(),
             titan_url: String::new(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Cheap shape guard for the duplicated Pyth feed constants: each must be
+    /// valid 32-byte hex and the three must be pairwise distinct. This catches a
+    /// typo'd/truncated constant; it cannot detect drift from `autara-pyth`
+    /// (that would require the heavy dependency we deliberately avoid — see the
+    /// `BTC_FEED`/`USDC_FEED`/`ETH_FEED` doc comment).
+    #[test]
+    fn pyth_feed_constants_are_valid() {
+        let feeds = [("BTC", BTC_FEED), ("USDC", USDC_FEED), ("ETH", ETH_FEED)];
+        let mut decoded = Vec::new();
+        for (label, hex_str) in feeds {
+            assert_eq!(
+                hex_str.len(),
+                64,
+                "{label} feed must be 64 hex chars (32 bytes)"
+            );
+            let id =
+                pyth_feed_for_label(label).unwrap_or_else(|| panic!("{label} feed must decode"));
+            assert!(
+                !decoded.contains(&id),
+                "{label} feed duplicates another feed"
+            );
+            decoded.push(id);
+        }
+    }
+
+    /// The placeholder mint list MUST decode (it is compared against parsed
+    /// token mints in `mainnet_safety_violations`); a malformed entry would
+    /// silently disable the guard for that mint.
+    #[test]
+    fn placeholder_mints_decode() {
+        for hex_str in PLACEHOLDER_MINT_HEXES {
+            assert!(
+                Pubkey::from_str(hex_str).is_ok(),
+                "placeholder mint {hex_str} must be a valid pubkey hex"
+            );
+        }
+    }
+
+    fn token(label: &str, mint_hex: &str) -> TokenConfig {
+        TokenConfig {
+            label: label.to_string(),
+            mint: Pubkey::from_str(mint_hex).unwrap(),
+            decimals: 8,
+        }
+    }
+
+    fn cfg_with(network: Network, use_faucet: bool, tokens: Vec<TokenConfig>) -> DeployConfig {
+        DeployConfig {
+            network,
+            arch_rpc_url: "http://127.0.0.1:1".to_string(),
+            program_key_path: "k".to_string(),
+            oracle_key_path: "k".to_string(),
+            deployer_key_path: "k".to_string(),
+            admin_key_path: "k".to_string(),
+            program_elf_path: "p".to_string(),
+            oracle_elf_path: "o".to_string(),
+            admin: None,
+            fee_receiver: None,
+            protocol_fee_share_bps: 5000,
+            tokens,
+            market_pairs: Vec::new(),
+            lending_market_fee_bps: 100,
+            market_params: MarketParams::default(),
+            use_faucet,
+            output_path: "out.json".to_string(),
+        }
+    }
+
+    // A non-placeholder (real-looking) mint hex, distinct from the testnet placeholders.
+    const REAL_MINT_HEX: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+
+    #[test]
+    fn mainnet_guard_flags_faucet_and_placeholder_mints() {
+        let cfg = cfg_with(
+            Network::Mainnet,
+            true,
+            vec![
+                token("BTC", PLACEHOLDER_MINT_HEXES[0]),
+                token("USDC", REAL_MINT_HEX),
+            ],
+        );
+        let v = cfg.mainnet_safety_violations();
+        // 1 faucet violation + 1 placeholder-mint violation (BTC); USDC is real.
+        assert_eq!(v.len(), 2, "violations: {v:?}");
+        assert!(v.iter().any(|m| m.contains("USE_FAUCET")));
+        assert!(v
+            .iter()
+            .any(|m| m.contains("BTC") && m.contains("PLACEHOLDER")));
+    }
+
+    #[test]
+    fn mainnet_guard_passes_with_real_mints_and_no_faucet() {
+        let cfg = cfg_with(Network::Mainnet, false, vec![token("USDC", REAL_MINT_HEX)]);
+        assert!(cfg.mainnet_safety_violations().is_empty());
+    }
+
+    #[test]
+    fn non_mainnet_is_never_flagged() {
+        // Even with faucet + placeholder mints, testnet/localnet are unaffected.
+        let cfg = cfg_with(
+            Network::Testnet,
+            true,
+            vec![token("BTC", PLACEHOLDER_MINT_HEXES[0])],
+        );
+        assert!(cfg.mainnet_safety_violations().is_empty());
     }
 }
