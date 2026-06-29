@@ -24,7 +24,7 @@ use clap::{Args, Parser, Subcommand};
 use sha2::{Digest, Sha256};
 
 use artifact::{DeploymentArtifact, TokenRecord};
-use config::{DeployConfig, Network};
+use config::{pyth_feed_for_label, DeployConfig, Network};
 use rpc::{load_keypair, RpcContext};
 
 #[derive(Parser, Debug)]
@@ -260,10 +260,19 @@ fn main() -> Result<()> {
     // The global-config payer/signer is the admin keypair.
     let ctx = RpcContext::new(cfg.arch_config()?, admin_kp, admin_default_pubkey);
 
-    // Step gating (default-on).
+    // Step gating (default-on, mirroring CLAMM's create-pool/seed convention).
+    // The CI engine sets these explicitly per action; the defaults only matter
+    // for manual/local runs.
     let step_deploy_program = env_flag("STEP_DEPLOY_PROGRAM", true);
     let step_deploy_oracle = env_flag("STEP_DEPLOY_ORACLE", true);
     let step_init_config = env_flag("STEP_INIT_CONFIG", true);
+    let step_token_setup = env_flag("STEP_TOKEN_SETUP", true);
+    let step_create_market = env_flag("STEP_CREATE_MARKET", true);
+
+    // Markets are curated by the admin keypair (the signer we hold), so the
+    // curator == the global-config payer/signer (`ctx.payer_pubkey()`).
+    let curator = admin_default_pubkey;
+    let market_pairs = cfg.effective_market_pairs();
 
     // ----- Preflight -----
     println!("== Autara deploy preflight ({}) ==", cfg.network.as_str());
@@ -308,6 +317,47 @@ fn main() -> Result<()> {
             "token {:<6}     mint={} decimals={}",
             t.label, t.mint, t.decimals
         );
+    }
+
+    // ----- Market / token-setup preview (derived addresses only) -----
+    println!("step_token_setup:  {step_token_setup}");
+    println!("step_create_market:{step_create_market}");
+    if step_create_market {
+        println!("curator:           {curator}");
+        println!("oracle_program_id: {oracle_pubkey}");
+        println!("lending_fee_bps:   {}", cfg.lending_market_fee_bps);
+        if market_pairs.is_empty() {
+            println!(
+                "markets:           (none — set MARKET_PAIRS or configure TOKENS with Pyth feeds)"
+            );
+        }
+        for pair in &market_pairs {
+            match (
+                cfg.token_by_label(&pair.supply_label),
+                cfg.token_by_label(&pair.collateral_label),
+            ) {
+                (Some(supply), Some(collateral)) => {
+                    let feeds_ok = pyth_feed_for_label(&supply.label).is_some()
+                        && pyth_feed_for_label(&collateral.label).is_some();
+                    let market =
+                        steps::derive_market_pda(program_pubkey, curator, supply, collateral, 0);
+                    println!(
+                        "market {:>4}/{:<4}  {market}{}",
+                        pair.supply_label,
+                        pair.collateral_label,
+                        if feeds_ok {
+                            ""
+                        } else {
+                            "  (NO Pyth feed — will be skipped)"
+                        }
+                    );
+                }
+                _ => println!(
+                    "market {:>4}/{:<4}  (UNRESOLVED — label not in TOKENS)",
+                    pair.supply_label, pair.collateral_label
+                ),
+            }
+        }
     }
 
     for (label, path) in [
@@ -381,6 +431,7 @@ fn main() -> Result<()> {
                 decimals: t.decimals,
             })
             .collect(),
+        markets: Vec::new(),
         transactions: Vec::new(),
     };
 
@@ -434,6 +485,57 @@ fn main() -> Result<()> {
             &mut artifact,
         ))?;
         println!("global config {pda}");
+    }
+
+    // Ensure the configured token mints exist before creating markets.
+    if step_token_setup {
+        rt.block_on(steps::ensure_token_mints(&ctx, &cfg.tokens))?;
+        println!("token setup: {} mint(s) ensured", cfg.tokens.len());
+    }
+
+    // Create a lending market for each configured pair (idempotent).
+    if step_create_market {
+        for pair in &market_pairs {
+            let supply = cfg.token_by_label(&pair.supply_label).with_context(|| {
+                format!(
+                    "market pair supply label '{}' not in TOKENS",
+                    pair.supply_label
+                )
+            })?;
+            let collateral = cfg
+                .token_by_label(&pair.collateral_label)
+                .with_context(|| {
+                    format!(
+                        "market pair collateral label '{}' not in TOKENS",
+                        pair.collateral_label
+                    )
+                })?;
+            if pyth_feed_for_label(&supply.label).is_none()
+                || pyth_feed_for_label(&collateral.label).is_none()
+            {
+                println!(
+                    "skipping market {}/{}: no Pyth feed mapping",
+                    pair.supply_label, pair.collateral_label
+                );
+                continue;
+            }
+            let market = rt.block_on(steps::create_market(
+                &ctx,
+                program_pubkey,
+                oracle_pubkey,
+                curator,
+                pair,
+                supply,
+                collateral,
+                cfg.lending_market_fee_bps,
+                0,
+                &mut artifact,
+            ))?;
+            println!(
+                "market {}/{} {market}",
+                pair.supply_label, pair.collateral_label
+            );
+        }
     }
 
     artifact.write(&cfg.output_path)?;

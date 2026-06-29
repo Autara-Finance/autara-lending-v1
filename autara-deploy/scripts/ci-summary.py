@@ -64,6 +64,19 @@ def main() -> int:
             )
         out.append("")
 
+    markets = d.get("markets") or []
+    if markets:
+        out.append("### Markets")
+        out.append("")
+        out.append("| pair | market | created |")
+        out.append("| --- | --- | --- |")
+        for m in markets:
+            pair = f"{m.get('supply_label')}/{m.get('collateral_label')}"
+            out.append(
+                f"| {pair} | `{m.get('market')}` | {m.get('created')} |"
+            )
+        out.append("")
+
     txs = d.get("transactions") or []
     if txs:
         base = explorer_tx_base(network)

@@ -1,12 +1,14 @@
 # Autara deploy runbook
 
 `autara-deploy` is an env-driven tool that deploys the Autara lending stack to
-Arch Network: the `autara-program` and `autara-oracle` ELFs plus the global
-config. It mirrors the CLAMM `clamm-deploy` crate.
+Arch Network: the `autara-program` and `autara-oracle` ELFs, the global config,
+and the lending markets. It mirrors the CLAMM `clamm-deploy` crate.
 
-**Phase 1 is TESTNET-FIRST.** `localnet` and `testnet` are wired up; `mainnet`
-is intentionally unconfigured (the `Network::Mainnet` variant exists so it can
-be added later without restructuring).
+`localnet`, `testnet`, and `mainnet` are all wired up. Mainnet defaults to the
+public Arch mainnet RPC (`https://rpc.mainnet.arch.network`) and the Bitcoin
+mainnet signing network. A **real** mainnet run is additionally gated in CI by
+the typed confirmation `DEPLOY MAINNET` (see `_autara-action.yml`) and the
+`mainnet` GitHub Environment; this tool never generates mainnet keypairs.
 
 ## TL;DR
 
@@ -36,10 +38,19 @@ DRY_RUN=1 cargo run -p autara-deploy
 2. **Deploy programs** — uploads `target/deploy/autara_program.so` and
    `autara_oracle.so` via the SDK `ProgramDeployer` (idempotent).
 3. **create_global_config** — admin + fee receiver + fee share (idempotent).
-4. **Artifact** — writes `deployments/<network>.json` (addresses + tx ids only).
+4. **Token setup** — ensures every configured `TOKENS` mint exists on-chain
+   (idempotent; fails loudly if a mint is missing — create mints out-of-band via
+   `autara-cli token setup`, this tool holds no mint authority).
+5. **create_market** — creates one lending market per `MARKET_PAIRS` entry
+   (curator = admin, default config mirrors `autara-server`; idempotent).
+6. **Artifact** — writes `deployments/<network>.json` (addresses + tx ids only),
+   including the created/ensured markets.
 
 Each step is gated by `STEP_DEPLOY_PROGRAM`, `STEP_DEPLOY_ORACLE`,
-`STEP_INIT_CONFIG` (all default `true`).
+`STEP_INIT_CONFIG`, `STEP_TOKEN_SETUP`, `STEP_CREATE_MARKET` (all default
+`true`). In CI these are set explicitly per action: `deploy` (programs),
+`initialize` (global config), `upgrade` (program re-upload), and `setup-markets`
+(token setup + markets — see `autara-setup-markets.yml`).
 
 ## Program-id guard (important)
 
@@ -69,4 +80,5 @@ The `autara-oracle` program is position-independent (it uses the runtime
 ## Per-network differences
 
 Only these should change between networks: `ARCH_RPC_URL`, the `*_KEY_PATH`
-files, and `TOKENS`. Everything else lives in the env file.
+files, `TOKENS`, and `MARKET_PAIRS`. Everything else lives in the env file. See
+`autara.mainnet.env` for the mainnet template (paths only, `.keys-mainnet/`).

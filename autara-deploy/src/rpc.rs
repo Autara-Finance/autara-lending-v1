@@ -66,6 +66,12 @@ impl RpcContext {
             .map(|a| a.lamports)
     }
 
+    /// Read-only check: does an account exist on-chain? Used to make the token
+    /// and market steps idempotent (mirrors the client's `account_exists`).
+    pub async fn account_exists(&self, pubkey: Pubkey) -> bool {
+        self.rpc.read_account_info(pubkey).await.is_ok()
+    }
+
     /// Read-only check: is the program account present and `is_executable`?
     pub async fn is_executable(&self, program_pubkey: Pubkey) -> bool {
         matches!(
