@@ -8,3 +8,7 @@ authority.key
 user.key
 .DS_Store
 .env
+
+# Key material: never track keypairs. Working copies live on disk only.
+keys/
+*.key
