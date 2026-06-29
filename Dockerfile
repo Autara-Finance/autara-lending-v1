@@ -14,15 +14,20 @@ RUN apt-get update && \
 
 COPY --from=builder /app/target/release/autara-server /usr/local/bin/autara-server
 COPY tokens.json /app/tokens.json
-COPY keys/ /app/keys/
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 WORKDIR /app
 EXPOSE 62776
 
-CMD ["autara-server", \
-     "--tokens", "tokens.json", \
-     "--signer", "keys/autara-cli-signer.key", \
-     "--program-id", "53def2dc8516302842b10e356914d2a5f6b33425ba42aec684f706aa1cf64192", \
-     "--oracle-program-id", "eee682c27db375bebbc17ed9a76aaa935c8b72bc7de50d736f03e2dfbed84b15", \
-     "--listen", "0.0.0.0:62776", \
-     "--network", "testnet"]
+# Keys are NEVER baked into the image. entrypoint.sh decodes them at runtime from
+# base64 env vars (SIGNER_KEY_B64, PROGRAM_KEY_B64, ORACLE_KEY_B64,
+# TOKEN_AUTHORITY_KEY_B64, optional TOKENS_JSON_B64) into /app/keys/, mirroring the
+# CI/Railway secrets pattern. These secrets MUST be provided at runtime.
+#
+# Program/oracle IDs are NOT passed as flags: the server derives them at boot from
+# /app/keys/autara-stage.key and /app/keys/autara-pyth-stage.key (see
+# autara_stage_program_id / autara_oracle_stage_program_id in autara-client/src/config.rs).
+# To KEEP production on the OLD program 53def2dc…1cf64192 / oracle eee682c2…ed84b15,
+# Railway MUST supply the OLD key material as PROGRAM_KEY_B64 / ORACLE_KEY_B64.
+ENTRYPOINT ["/app/entrypoint.sh"]
