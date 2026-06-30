@@ -18,7 +18,8 @@ use jsonrpsee::{
 use crate::{
     api::{api::AutaraServerApiServer, market::FullMarket, types::*},
     client::{
-        blockhash_cache::BlockhashCache, client_without_signer::AutaraFullClientWithoutSigner,
+        blockhash_cache::BlockhashCache,
+        client_without_signer::AutaraFullClientWithoutSigner,
         read::{AutaraReadClient, BorrowPositionInfo, SupplyPositionInfo, UserPositionItem},
         shared_autara_state::AutaraSharedState,
     },
@@ -28,7 +29,10 @@ use crate::{
 
 pub struct AutataServerContext {
     pub client: AutaraFullClientWithoutSigner<Arc<AutaraSharedState>>,
-    pub minters: Vec<TokenMinter>,
+    /// Each minter paired with the per-token faucet amount (raw units) that
+    /// `initialize` mints to a new user. Configured server-side (per-token in
+    /// tokens.json or the FAUCET_MINT_AMOUNT default) — no longer hardcoded.
+    pub minters: Vec<(TokenMinter, u64)>,
     active_market_streams: DashSet<ConnectionId>,
     active_user_position_streams: DashSet<ConnectionId>,
 }
@@ -67,9 +71,9 @@ impl AutaraServerApiServer for AutataServerContext {
             .request_airdrop(request.user)
             .await
             .internal("Failed to aidrop")?;
-        for minter in &self.minters {
+        for (minter, faucet_amount) in &self.minters {
             minter
-                .mint_to(&request.user, 100_000_000_000)
+                .mint_to(&request.user, *faucet_amount)
                 .await
                 .internal("Failed to mint tokens")?;
         }
@@ -349,7 +353,7 @@ impl AutaraServerApiServer for AutataServerContext {
 
 pub async fn build_autara_server(
     read_client: Arc<AutaraSharedState>,
-    minters: Vec<TokenMinter>,
+    minters: Vec<(TokenMinter, u64)>,
     arch_client: AsyncArchRpcClient,
 ) -> anyhow::Result<RpcModule<AutataServerContext>> {
     let context = AutataServerContext {

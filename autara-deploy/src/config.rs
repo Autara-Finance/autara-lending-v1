@@ -75,12 +75,25 @@ impl FromStr for Network {
 }
 
 /// A token mint to record in the deployment artifact and to wire into the
-/// market-creation steps. Parsed from `TOKENS=LABEL:MINT_HEX:DECIMALS,...`.
+/// market-creation steps. Parsed from
+/// `TOKENS=LABEL:MINT_HEX:DECIMALS[:MINT_AMOUNT[:FAUCET_AMOUNT]],...`.
+///
+/// `mint_amount` is the initial supply minted to the authority's ATA by the
+/// (opt-in) `mint_initial_supply` deploy step; `faucet_amount` is the per-user
+/// amount the running server's faucet mints (carried here so a single manifest
+/// documents both). Both default to [`DEFAULT_TOKEN_AMOUNT`].
 #[derive(Debug, Clone)]
 pub struct TokenConfig {
     pub label: String,
     pub mint: Pubkey,
     pub decimals: u8,
+    /// Initial supply (raw units) the deploy mint step mints to the authority.
+    pub mint_amount: u64,
+    /// Per-user faucet amount (raw units) for the server's `initialize` faucet.
+    pub faucet_amount: u64,
+    /// Optional per-token mint-authority keypair path (`MINT_AUTHORITY_KEY_PATH_<LABEL>`).
+    /// Falls back to the deploy-wide `MINT_AUTHORITY_KEY_PATH` when unset.
+    pub mint_authority_key_path: Option<String>,
 }
 
 /// Pyth price-feed ids (32-byte, hex) for the labels Autara markets use. These
@@ -100,12 +113,22 @@ const BTC_FEED: &str = "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f
 const USDC_FEED: &str = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a";
 const ETH_FEED: &str = "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
 
+/// Default per-token initial-supply mint amount and server faucet amount, in raw
+/// (smallest) units. Mirrors CLAMM's `TEST_MINT_AMOUNT` (1e12 raw). Overridable
+/// per-token in `TOKENS` (4th/5th colon field) or globally via
+/// `DEFAULT_MINT_AMOUNT` / `DEFAULT_FAUCET_AMOUNT`.
+pub const DEFAULT_TOKEN_AMOUNT: u64 = 1_000_000_000_000;
+
 /// Map a token label to its Pyth feed id (32 bytes). Case-insensitive; returns
 /// `None` for labels without a known feed (those pairs are skipped).
+///
+/// `aBTC`/`aUSD` are the Autara testnet APL tokens (reused CLAMM mints); they
+/// alias the existing `BTC`/`USDC` USD price feeds respectively, so the
+/// `aUSD/aBTC` market resolves to real Pyth prices without a new feed.
 pub fn pyth_feed_for_label(label: &str) -> Option<[u8; 32]> {
     let hex_str = match label.trim().to_uppercase().as_str() {
-        "BTC" => BTC_FEED,
-        "USDC" => USDC_FEED,
+        "BTC" | "ABTC" => BTC_FEED,
+        "USDC" | "AUSD" => USDC_FEED,
         "ETH" => ETH_FEED,
         _ => return None,
     };
@@ -180,6 +203,15 @@ pub struct DeployConfig {
     /// Token mints to record and to build markets from.
     pub tokens: Vec<TokenConfig>,
 
+    /// Deploy-wide mint-authority keypair path used by the (opt-in)
+    /// `mint_initial_supply` step. A per-token `MINT_AUTHORITY_KEY_PATH_<LABEL>`
+    /// overrides this for that token. `None` => the mint step is skipped (the
+    /// deploy tool never holds a mint authority by default).
+    pub mint_authority_key_path: Option<String>,
+    /// Optional recipient of the minted initial supply (`MINT_RECIPIENT`,
+    /// pubkey). Defaults to the mint authority's own ATA when unset.
+    pub mint_recipient: Option<Pubkey>,
+
     /// Token pairs (by label) to create markets for. Empty => derive every
     /// ordered pair of configured tokens that has a known Pyth feed.
     pub market_pairs: Vec<MarketPair>,
@@ -246,9 +278,18 @@ fn env_pubkey_opt(key: &str) -> Result<Option<Pubkey>> {
     }
 }
 
-/// Parse "BTC:36a9...:8,USDC:a80f...:6" into token configs. Mints are HEX
-/// (arch_program `Pubkey::from_str` == hex::decode), not base58.
-fn parse_tokens(raw: &str) -> Result<Vec<TokenConfig>> {
+/// Parse `LABEL:MINT_HEX:DECIMALS[:MINT_AMOUNT[:FAUCET_AMOUNT]]` entries
+/// (comma-separated) into token configs. Mints are HEX (arch_program
+/// `Pubkey::from_str` == hex::decode), not base58.
+///
+/// The 3-field form stays backward-compatible. Omitted amount fields fall back
+/// to `default_mint_amount` / `default_faucet_amount`. The per-token
+/// mint-authority override is resolved separately from the env in `from_env`.
+fn parse_tokens(
+    raw: &str,
+    default_mint_amount: u64,
+    default_faucet_amount: u64,
+) -> Result<Vec<TokenConfig>> {
     let mut tokens = Vec::new();
     for entry in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         let mut parts = entry.split(':');
@@ -257,7 +298,7 @@ fn parse_tokens(raw: &str) -> Result<Vec<TokenConfig>> {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
-                anyhow!("invalid TOKENS entry '{entry}' (expected LABEL:MINT:DECIMALS)")
+                anyhow!("invalid TOKENS entry '{entry}' (expected LABEL:MINT:DECIMALS[:MINT_AMOUNT[:FAUCET_AMOUNT]])")
             })?
             .to_string();
         let mint_raw = parts.next().ok_or_else(|| {
@@ -272,10 +313,25 @@ fn parse_tokens(raw: &str) -> Result<Vec<TokenConfig>> {
             .trim()
             .parse()
             .with_context(|| format!("invalid decimals for token '{label}'"))?;
+        let mint_amount = match parts.next().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(v) => v
+                .parse()
+                .with_context(|| format!("invalid mint_amount for token '{label}'"))?,
+            None => default_mint_amount,
+        };
+        let faucet_amount = match parts.next().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(v) => v
+                .parse()
+                .with_context(|| format!("invalid faucet_amount for token '{label}'"))?,
+            None => default_faucet_amount,
+        };
         tokens.push(TokenConfig {
             label,
             mint,
             decimals,
+            mint_amount,
+            faucet_amount,
+            mint_authority_key_path: None,
         });
     }
     Ok(tokens)
@@ -310,10 +366,18 @@ impl DeployConfig {
             None => network.default_rpc_url()?,
         };
 
-        let tokens = match env_opt("TOKENS") {
-            Some(raw) => parse_tokens(&raw)?,
+        let default_mint_amount = env_parse("DEFAULT_MINT_AMOUNT", DEFAULT_TOKEN_AMOUNT)?;
+        let default_faucet_amount = env_parse("DEFAULT_FAUCET_AMOUNT", DEFAULT_TOKEN_AMOUNT)?;
+        let mut tokens = match env_opt("TOKENS") {
+            Some(raw) => parse_tokens(&raw, default_mint_amount, default_faucet_amount)?,
             None => Vec::new(),
         };
+        // Per-token mint-authority override: MINT_AUTHORITY_KEY_PATH_<LABEL>
+        // (label upper-cased). Falls back to the deploy-wide key at step time.
+        for token in &mut tokens {
+            let key = format!("MINT_AUTHORITY_KEY_PATH_{}", token.label.to_uppercase());
+            token.mint_authority_key_path = env_opt(&key);
+        }
 
         let market_pairs = match env_opt("MARKET_PAIRS") {
             Some(raw) => parse_market_pairs(&raw)?,
@@ -337,6 +401,8 @@ impl DeployConfig {
             protocol_fee_share_bps: env_parse("PROTOCOL_FEE_SHARE_BPS", 5000u16)?,
 
             tokens,
+            mint_authority_key_path: env_opt("MINT_AUTHORITY_KEY_PATH"),
+            mint_recipient: env_pubkey_opt("MINT_RECIPIENT")?,
 
             market_pairs,
             lending_market_fee_bps: env_parse("LENDING_MARKET_FEE_BPS", 100u16)?,
@@ -364,6 +430,16 @@ impl DeployConfig {
         };
 
         Ok(cfg)
+    }
+
+    /// Resolve the mint-authority keypair path for a token: the per-token
+    /// override (`MINT_AUTHORITY_KEY_PATH_<LABEL>`) if set, else the deploy-wide
+    /// `MINT_AUTHORITY_KEY_PATH`. `None` => the token is skipped by the mint step.
+    pub fn mint_authority_for<'a>(&'a self, token: &'a TokenConfig) -> Option<&'a str> {
+        token
+            .mint_authority_key_path
+            .as_deref()
+            .or(self.mint_authority_key_path.as_deref())
     }
 
     /// Look up a configured token by (case-insensitive) label.
@@ -505,6 +581,9 @@ mod tests {
             label: label.to_string(),
             mint: Pubkey::from_str(mint_hex).unwrap(),
             decimals: 8,
+            mint_amount: DEFAULT_TOKEN_AMOUNT,
+            faucet_amount: DEFAULT_TOKEN_AMOUNT,
+            mint_authority_key_path: None,
         }
     }
 
@@ -522,6 +601,8 @@ mod tests {
             fee_receiver: None,
             protocol_fee_share_bps: 5000,
             tokens,
+            mint_authority_key_path: None,
+            mint_recipient: None,
             market_pairs: Vec::new(),
             lending_market_fee_bps: 100,
             market_params: MarketParams::default(),
@@ -556,6 +637,47 @@ mod tests {
     fn mainnet_guard_passes_with_real_mints_and_no_faucet() {
         let cfg = cfg_with(Network::Mainnet, false, vec![token("USDC", REAL_MINT_HEX)]);
         assert!(cfg.mainnet_safety_violations().is_empty());
+    }
+
+    #[test]
+    fn abtc_ausd_alias_existing_feeds() {
+        // The new Autara testnet tokens must resolve to the SAME feeds as the
+        // BTC / USDC labels (reused price feeds), so the aUSD/aBTC market is not
+        // skipped for lack of a Pyth feed.
+        assert_eq!(pyth_feed_for_label("aBTC"), pyth_feed_for_label("BTC"));
+        assert_eq!(pyth_feed_for_label("aUSD"), pyth_feed_for_label("USDC"));
+        assert!(pyth_feed_for_label("aBTC").is_some());
+        assert!(pyth_feed_for_label("aUSD").is_some());
+    }
+
+    #[test]
+    fn parse_tokens_amounts_default_and_explicit() {
+        // 3-field form falls back to the provided defaults.
+        let toks = parse_tokens(&format!("BTC:{REAL_MINT_HEX}:8"), 111, 222).unwrap();
+        assert_eq!(toks[0].mint_amount, 111);
+        assert_eq!(toks[0].faucet_amount, 222);
+
+        // 4th field sets mint_amount; faucet falls back. 5th field sets faucet.
+        let toks = parse_tokens(
+            &format!("BTC:{REAL_MINT_HEX}:8:5000,USDC:{REAL_MINT_HEX}:6:7000:9000"),
+            111,
+            222,
+        )
+        .unwrap();
+        assert_eq!((toks[0].mint_amount, toks[0].faucet_amount), (5000, 222));
+        assert_eq!((toks[1].mint_amount, toks[1].faucet_amount), (7000, 9000));
+    }
+
+    #[test]
+    fn mint_authority_for_prefers_per_token_then_shared() {
+        let mut cfg = cfg_with(Network::Testnet, true, vec![token("aBTC", REAL_MINT_HEX)]);
+        cfg.mint_authority_key_path = Some("shared.json".to_string());
+        // No per-token override => shared.
+        assert_eq!(cfg.mint_authority_for(&cfg.tokens[0]), Some("shared.json"));
+        // Per-token override wins.
+        let mut tok = cfg.tokens[0].clone();
+        tok.mint_authority_key_path = Some("abtc.json".to_string());
+        assert_eq!(cfg.mint_authority_for(&tok), Some("abtc.json"));
     }
 
     #[test]

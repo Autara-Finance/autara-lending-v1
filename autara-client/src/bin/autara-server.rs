@@ -87,7 +87,17 @@ struct TokenEntry {
     decimals: u8,
     #[serde(rename = "keyFile")]
     key_file: String,
+    /// Optional per-token faucet amount (raw units) minted to a new user by the
+    /// server's `initialize`. Falls back to FAUCET_MINT_AMOUNT (env) / the
+    /// DEFAULT_FAUCET_MINT_AMOUNT constant when unset.
+    #[serde(rename = "faucetAmount")]
+    faucet_amount: Option<u64>,
 }
+
+/// Default per-user faucet amount (raw units) when neither tokens.json nor the
+/// FAUCET_MINT_AMOUNT env var specifies one. Mirrors CLAMM's TEST_MINT_AMOUNT
+/// (1e12 raw); replaces the previously hardcoded 100_000_000_000.
+const DEFAULT_FAUCET_MINT_AMOUNT: u64 = 1_000_000_000_000;
 
 fn parse_network(network: &str) -> anyhow::Result<Network> {
     match network.to_lowercase().as_str() {
@@ -112,8 +122,8 @@ fn parse_pubkey(s: &str) -> anyhow::Result<Pubkey> {
 /// Map token name -> Pyth feed ID (bytes)
 fn pyth_feed_for_token(name: &str) -> Option<[u8; 32]> {
     let feed_hex = match name.to_uppercase().as_str() {
-        "BTC" => BTC_FEED,
-        "USDC" => USDC_FEED,
+        "BTC" | "ABTC" => BTC_FEED,
+        "USDC" | "AUSD" => USDC_FEED,
         "ETH" => ETH_FEED,
         _ => return None,
     };
@@ -350,8 +360,8 @@ async fn main() -> Result<(), anyhow::Error> {
         .iter()
         .filter_map(|name| {
             let feed_hex = match name.to_uppercase().as_str() {
-                "BTC" => Some(BTC_FEED),
-                "USDC" => Some(USDC_FEED),
+                "BTC" | "ABTC" => Some(BTC_FEED),
+                "USDC" | "AUSD" => Some(USDC_FEED),
                 "ETH" => Some(ETH_FEED),
                 _ => None,
             }?;
@@ -382,20 +392,38 @@ async fn main() -> Result<(), anyhow::Error> {
         });
     }
 
-    // Build token minters from config (using token authority key)
+    // Per-user faucet amount default: FAUCET_MINT_AMOUNT env, else the constant.
+    let default_faucet_amount: u64 = match std::env::var("FAUCET_MINT_AMOUNT")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    {
+        Some(v) => v
+            .trim()
+            .parse()
+            .context("invalid FAUCET_MINT_AMOUNT (expected raw u64)")?,
+        None => DEFAULT_FAUCET_MINT_AMOUNT,
+    };
+
+    // Build token minters from config (using token authority key), each paired
+    // with its per-token faucet amount.
     let mut minters = Vec::new();
     for (name, token) in tokens {
         let mint = parse_pubkey(&token.mint)?;
+        let faucet_amount = token.faucet_amount.unwrap_or(default_faucet_amount);
         let minter = TokenMinter::from_existing(arch_client.clone(), token_authority_keypair, mint);
-        tracing::info!("Token minter for {} ({:?})", name, mint);
-        minters.push(minter);
+        tracing::info!(
+            "Token minter for {} ({:?}) faucet_amount={}",
+            name,
+            mint,
+            faucet_amount
+        );
+        minters.push((minter, faucet_amount));
     }
 
     // Start the shared state (auto-reloading)
-    let autara_state =
-        AutaraSharedState::new(arch_client.clone(), autara_program_id)
-            .spawn()
-            .0;
+    let autara_state = AutaraSharedState::new(arch_client.clone(), autara_program_id)
+        .spawn()
+        .0;
 
     // Build and start the RPC server
     let cors = CorsLayer::new()
