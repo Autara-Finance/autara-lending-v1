@@ -2,7 +2,10 @@
 //! the relevant instruction(s) via `autara-lib` and sends them through the
 //! shared [`RpcContext`], recording tx ids into the [`DeploymentArtifact`].
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use apl_token::state::{Account as TokenAccount, Mint};
+use arch_program::program_option::COption;
+use arch_program::program_pack::Pack;
 use arch_program::pubkey::Pubkey;
 
 use autara_lib::interest_rate::interest_rate_kind::InterestRateCurveKind;
@@ -11,6 +14,7 @@ use autara_lib::math::ifixed_point::IFixedPoint;
 use autara_lib::oracle::oracle_config::OracleConfig;
 use autara_lib::pda::find_market_pda;
 use autara_lib::state::market_config::LtvConfig;
+use autara_lib::token::{create_ata_ix, get_associated_token_address};
 
 use crate::artifact::{DeploymentArtifact, MarketRecord};
 use crate::config::{pyth_feed_for_label, MarketPair, MarketParams, TokenConfig};
@@ -72,6 +76,109 @@ pub async fn ensure_token_mints(ctx: &RpcContext, tokens: &[TokenConfig]) -> Res
             );
         }
     }
+    Ok(())
+}
+
+/// Mint a token's configured initial supply to `recipient`'s ATA, signed/paid by
+/// the mint authority (`authority_ctx`'s payer).
+///
+/// SAFETY GATE (mirrors CLAMM's `clamm-deploy mint-to`): before sending anything
+/// it reads the mint on-chain and REFUSES if the on-chain `mint_authority` does
+/// not match the supplied authority keypair, or if the mint's `decimals` differ
+/// from the configured value. This makes a wrong-key run a no-op error rather
+/// than a silent failure, so the candidate authority keys can be supplied at the
+/// gated live run without risk.
+///
+/// Idempotent-ish: if the recipient ATA already holds `>= mint_amount`, the mint
+/// is skipped (so a re-run does not keep inflating supply).
+pub async fn mint_initial_supply(
+    authority_ctx: &RpcContext,
+    token: &TokenConfig,
+    recipient: Pubkey,
+    artifact: &mut DeploymentArtifact,
+) -> Result<()> {
+    let authority = authority_ctx.payer_pubkey();
+
+    // ----- 1. read-only safety gate: decimals + on-chain mint_authority -----
+    let mint_info = authority_ctx
+        .rpc
+        .read_account_info(token.mint)
+        .await
+        .map_err(|e| anyhow!("reading mint {} ({}) failed: {e}", token.label, token.mint))?;
+    let mint_state = Mint::unpack(&mint_info.data)
+        .map_err(|e| anyhow!("decoding mint {} ({}): {e}", token.label, token.mint))?;
+
+    if mint_state.decimals != token.decimals {
+        bail!(
+            "decimals mismatch for {} ({}): on-chain {}, configured {}",
+            token.label,
+            token.mint,
+            mint_state.decimals,
+            token.decimals
+        );
+    }
+    match mint_state.mint_authority {
+        COption::Some(on_chain) if on_chain == authority => {}
+        COption::Some(on_chain) => bail!(
+            "mint_authority MISMATCH for {} ({}): on-chain {on_chain}, supplied {authority}. \
+             Refusing to mint — supply the correct MINT_AUTHORITY_KEY_PATH[_{}].",
+            token.label,
+            token.mint,
+            token.label.to_uppercase()
+        ),
+        COption::None => bail!(
+            "mint {} ({}) has no mint_authority (fixed supply); cannot mint",
+            token.label,
+            token.mint
+        ),
+    }
+
+    // ----- 2. idempotency: skip if the recipient ATA already holds enough -----
+    let ata = get_associated_token_address(&recipient, &token.mint);
+    let existing_balance = match authority_ctx.rpc.read_account_info(ata).await {
+        Ok(info) => TokenAccount::unpack(&info.data).map(|a| a.amount).ok(),
+        Err(_) => None,
+    };
+    if matches!(existing_balance, Some(bal) if bal >= token.mint_amount) {
+        println!(
+            "mint {:<6}     {} already holds {} (>= {}) — skipping",
+            token.label,
+            ata,
+            existing_balance.unwrap(),
+            token.mint_amount
+        );
+        return Ok(());
+    }
+
+    // ----- 3. ensure the recipient ATA exists (funded by the authority) -----
+    if existing_balance.is_none() {
+        let create_ix = create_ata_ix(&authority, Some(&ata), &recipient, &token.mint);
+        let txid = authority_ctx
+            .send(vec![create_ix], vec![])
+            .await
+            .with_context(|| format!("creating ATA {ata} for {}", token.label))?;
+        artifact.record_tx(&format!("create_ata:{}", token.label), txid);
+    }
+
+    // ----- 4. mint the configured initial supply -----
+    let mint_ix = apl_token::instruction::mint_to(
+        &apl_token::id(),
+        &token.mint,
+        &ata,
+        &authority,
+        &[],
+        token.mint_amount,
+    )
+    .map_err(|e| anyhow!("building mint_to for {} failed: {e}", token.label))?;
+    let txid = authority_ctx
+        .send(vec![mint_ix], vec![])
+        .await
+        .with_context(|| format!("mint_to {} ({})", token.label, token.mint))?;
+    artifact.record_tx(&format!("mint_initial_supply:{}", token.label), txid);
+    println!(
+        "mint {:<6}     {} += {} -> {}",
+        token.label, ata, token.mint_amount, recipient
+    );
     Ok(())
 }
 

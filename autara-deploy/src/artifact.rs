@@ -42,6 +42,10 @@ pub struct TokenRecord {
     pub label: String,
     pub mint: String,
     pub decimals: u8,
+    /// Configured initial-supply mint amount (raw units) for this token.
+    pub mint_amount: u64,
+    /// Configured server faucet amount (raw units) for this token.
+    pub faucet_amount: u64,
 }
 
 /// A market created (or already present) during the deploy. Addresses only.

@@ -13,6 +13,7 @@ mod artifact;
 mod config;
 mod rpc;
 mod steps;
+mod verify;
 
 use std::path::Path;
 use std::str::FromStr;
@@ -51,6 +52,23 @@ enum Command {
     /// Sends ONLY faucet airdrops — no deploy/init/program transactions. Uses
     /// the same env-driven key paths as the deploy flow.
     Fund(FundArgs),
+    /// Read-only end-to-end verification of a deployment: asserts the program,
+    /// global config, mints, markets, and oracle freshness on-chain (and,
+    /// optionally, the running server JSON-RPC). Sends NO transaction.
+    Verify(VerifyArgs),
+}
+
+#[derive(Args, Debug)]
+struct VerifyArgs {
+    /// Optional autara-server JSON-RPC url to probe (get_all_market_ids /
+    /// get_market_by_id). Omit to skip the server check.
+    #[arg(long)]
+    server_url: Option<String>,
+
+    /// Assert each mint's supply >= its configured mint_amount (use only when
+    /// the initial-supply minting step was expected to have run).
+    #[arg(long, default_value_t = false)]
+    expect_supply: bool,
 }
 
 #[derive(Args, Debug)]
@@ -242,6 +260,10 @@ fn main() -> Result<()> {
         return match command {
             Command::CheckBalance(args) => rt.block_on(run_check_balance(args)),
             Command::Fund(args) => rt.block_on(run_fund(args)),
+            Command::Verify(args) => {
+                let cfg = DeployConfig::from_env()?;
+                rt.block_on(verify::run(&cfg, args.server_url, args.expect_supply))
+            }
         };
     }
 
@@ -267,6 +289,10 @@ fn main() -> Result<()> {
     let step_deploy_oracle = env_flag("STEP_DEPLOY_ORACLE", true);
     let step_init_config = env_flag("STEP_INIT_CONFIG", true);
     let step_token_setup = env_flag("STEP_TOKEN_SETUP", true);
+    // Minting an initial supply is sensitive (requires a mint authority) and is
+    // therefore OPT-IN: off by default and a no-op unless a mint authority key
+    // is also resolvable. The step itself verifies the on-chain mint_authority.
+    let step_mint_initial_supply = env_flag("STEP_MINT_INITIAL_SUPPLY", false);
     let step_create_market = env_flag("STEP_CREATE_MARKET", true);
 
     // Markets are curated by the admin keypair (the signer we hold), so the
@@ -347,6 +373,22 @@ fn main() -> Result<()> {
 
     // ----- Market / token-setup preview (derived addresses only) -----
     println!("step_token_setup:  {step_token_setup}");
+    println!("step_mint_supply:  {step_mint_initial_supply}");
+    if step_mint_initial_supply {
+        for t in &cfg.tokens {
+            match cfg.mint_authority_for(t) {
+                Some(path) => println!(
+                    "mint {:<6}     amount={} authority_key={path}",
+                    t.label, t.mint_amount
+                ),
+                None => println!(
+                    "mint {:<6}     (SKIP — no MINT_AUTHORITY_KEY_PATH[_{}])",
+                    t.label,
+                    t.label.to_uppercase()
+                ),
+            }
+        }
+    }
     println!("step_create_market:{step_create_market}");
     if step_create_market {
         println!("curator:           {curator}");
@@ -462,6 +504,8 @@ fn main() -> Result<()> {
                 label: t.label.clone(),
                 mint: t.mint.to_string(),
                 decimals: t.decimals,
+                mint_amount: t.mint_amount,
+                faucet_amount: t.faucet_amount,
             })
             .collect(),
         markets: Vec::new(),
@@ -524,6 +568,43 @@ fn main() -> Result<()> {
     if step_token_setup {
         rt.block_on(steps::ensure_token_mints(&ctx, &cfg.tokens))?;
         println!("token setup: {} mint(s) ensured", cfg.tokens.len());
+    }
+
+    // Mint the configured initial supply to the authority's ATA (opt-in). Each
+    // token needs a resolvable mint authority; the step verifies the on-chain
+    // mint_authority and refuses on mismatch. Tokens without an authority key
+    // are skipped (logged), not fatal.
+    if step_mint_initial_supply {
+        for token in &cfg.tokens {
+            if token.mint_amount == 0 {
+                continue;
+            }
+            let Some(authority_path) = cfg.mint_authority_for(token) else {
+                println!(
+                    "mint {}: no authority key configured — skipping",
+                    token.label
+                );
+                continue;
+            };
+            let (authority_kp, authority_pubkey) = load_keypair(authority_path)?;
+            let authority_ctx = RpcContext::new(cfg.arch_config()?, authority_kp, authority_pubkey);
+            if cfg.use_faucet {
+                rt.block_on(async {
+                    for _ in 0..3 {
+                        if let Err(e) = authority_ctx.fund_with_faucet(&authority_kp).await {
+                            eprintln!("faucet -> mint authority did not confirm cleanly: {e}");
+                        }
+                    }
+                });
+            }
+            let recipient = cfg.mint_recipient.unwrap_or(authority_pubkey);
+            rt.block_on(steps::mint_initial_supply(
+                &authority_ctx,
+                token,
+                recipient,
+                &mut artifact,
+            ))?;
+        }
     }
 
     // Create a lending market for each configured pair (idempotent).
