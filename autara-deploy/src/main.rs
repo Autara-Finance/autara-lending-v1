@@ -148,6 +148,40 @@ fn resolve_network(explicit: Option<String>) -> Result<Network> {
         .parse()
 }
 
+/// Print the mainnet manual-funding banner. Mainnet has no faucet, so the
+/// operator must fund the deployer + admin out-of-band before a real deploy.
+/// Shows both addresses and their current on-chain balances (or "account not
+/// found") so the operator knows exactly what to fund. Printed in both dry-run
+/// and real runs; the actual halt-on-insufficient-funds gate lives in the real
+/// run path.
+fn print_mainnet_funding_banner(
+    deployer: Pubkey,
+    deployer_balance: Option<u64>,
+    admin: Pubkey,
+    admin_balance: Option<u64>,
+    min_deployer_lamports: u64,
+    mint_supply_note: bool,
+) {
+    let fmt = |b: Option<u64>| match b {
+        Some(v) => v.to_string(),
+        None => "account not found".to_string(),
+    };
+    println!("================ MANUAL FUNDING REQUIRED (MAINNET) ================");
+    println!("Fund these addresses with native lamports before deploying:");
+    println!("  deployer: {deployer}   balance: {}", fmt(deployer_balance));
+    println!("  admin:    {admin}   balance: {}", fmt(admin_balance));
+    println!(
+        "  (deployer needs >= {min_deployer_lamports} lamports; admin must be funded > 0)"
+    );
+    if mint_supply_note {
+        println!(
+            "  note: STEP_MINT_INITIAL_SUPPLY is set — the mint authority account(s) also \
+             need manual funding"
+        );
+    }
+    println!("===================================================================");
+}
+
 /// `check-balance` subcommand: read-only lamport-balance report.
 async fn run_check_balance(args: CheckBalanceArgs) -> Result<()> {
     let network = resolve_network(args.network)?;
@@ -451,13 +485,28 @@ fn main() -> Result<()> {
             Ok(()) => println!("rpc_reachable:     yes"),
             Err(e) => println!("rpc_reachable:     NO ({e})"),
         }
-        match ctx.balance(deployer_pubkey).await {
+        let deployer_balance = ctx.balance(deployer_pubkey).await;
+        match deployer_balance {
             Some(b) => println!("deployer_balance:  {b} lamports"),
             None => println!("deployer_balance:  (account not found)"),
         }
-        match ctx.balance(admin).await {
+        let admin_balance = ctx.balance(admin).await;
+        match admin_balance {
             Some(b) => println!("admin_balance:     {b} lamports"),
             None => println!("admin_balance:     (account not found)"),
+        }
+        // Mainnet has no faucet: surface the addresses so the operator can fund
+        // them manually. Printed in dry-run and real runs alike (the real run
+        // additionally halts if funding is insufficient — see below).
+        if cfg.network == Network::Mainnet {
+            print_mainnet_funding_banner(
+                deployer_pubkey,
+                deployer_balance,
+                admin,
+                admin_balance,
+                cfg.min_deployer_lamports,
+                step_mint_initial_supply,
+            );
         }
         if step_deploy_program {
             let live = ctx.is_executable(program_pubkey).await;
@@ -512,7 +561,11 @@ fn main() -> Result<()> {
         transactions: Vec::new(),
     };
 
-    // Faucet-fund the deployer + admin (large ELFs => several airdrops).
+    // Fund the deployer + admin. Localnet/testnet use the faucet (large ELFs =>
+    // several airdrops). Mainnet has no faucet: gate on the operator having
+    // funded both accounts out-of-band and halt otherwise. (This code is only
+    // reached on a REAL run — dry-run returns above — so the gate never fires
+    // in dry-run; the funding banner was already printed in preflight.)
     if cfg.use_faucet {
         rt.block_on(async {
             for _ in 0..5 {
@@ -522,6 +575,23 @@ fn main() -> Result<()> {
             Ok::<_, anyhow::Error>(())
         })?;
         println!("faucet: funded deployer + admin");
+    } else if cfg.network == Network::Mainnet {
+        rt.block_on(async {
+            let deployer_balance = ctx.balance(deployer_pubkey).await;
+            let admin_balance = ctx.balance(admin).await;
+            // Deployer must cover the large ELF uploads; admin only signs the
+            // cheap create_global_config / market instructions, so requiring it
+            // to merely exist and be non-zero is sufficient.
+            let deployer_ok = deployer_balance.is_some_and(|b| b >= cfg.min_deployer_lamports);
+            let admin_ok = admin_balance.is_some_and(|b| b > 0);
+            if !deployer_ok || !admin_ok {
+                bail!(
+                    "Insufficient funds — fund the address(es) above and re-run this deploy."
+                );
+            }
+            Ok::<_, anyhow::Error>(())
+        })?;
+        println!("mainnet: deployer + admin funding verified");
     }
 
     // Deploy the programs (SYNCHRONOUS ProgramDeployer — outside the runtime).
