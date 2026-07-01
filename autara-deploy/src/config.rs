@@ -119,6 +119,18 @@ const ETH_FEED: &str = "ff61491a931112ddf1bd8147cd1b641375f79f5825126d6654808746
 /// `DEFAULT_MINT_AMOUNT` / `DEFAULT_FAUCET_AMOUNT`.
 pub const DEFAULT_TOKEN_AMOUNT: u64 = 1_000_000_000_000;
 
+/// Native lamports the SDK faucet grants per airdrop (arch_sdk's
+/// `ACCOUNT_FUNDING_AMOUNT`). Used only to derive the conservative mainnet
+/// manual-funding threshold below — mainnet itself has no faucet.
+const FAUCET_AIRDROP_LAMPORTS: u64 = 1_000_000;
+
+/// Minimum native-lamport balance the deployer must already hold before a REAL
+/// mainnet deploy (there is no faucet on mainnet; the operator funds it
+/// out-of-band). Heuristic: the testnet deploy path requests 5 faucet airdrops
+/// for the deployer to cover the large program ELFs, so mirror that as
+/// `5 * FAUCET_AIRDROP_LAMPORTS`. Overridable via `MIN_DEPLOYER_LAMPORTS`.
+pub const DEFAULT_MIN_DEPLOYER_LAMPORTS: u64 = 5 * FAUCET_AIRDROP_LAMPORTS;
+
 /// Map a token label to its Pyth feed id (32 bytes). Case-insensitive; returns
 /// `None` for labels without a known feed (those pairs are skipped).
 ///
@@ -221,6 +233,9 @@ pub struct DeployConfig {
     pub market_params: MarketParams,
 
     pub use_faucet: bool,
+    /// Minimum native-lamport balance the deployer must hold on a REAL mainnet
+    /// run (mainnet has no faucet). See [`DEFAULT_MIN_DEPLOYER_LAMPORTS`].
+    pub min_deployer_lamports: u64,
     pub output_path: String,
 }
 
@@ -384,6 +399,16 @@ impl DeployConfig {
             None => Vec::new(),
         };
 
+        // Mainnet NEVER faucets — there is no faucet on mainnet. Force it off so
+        // an accidental `USE_FAUCET=true` env override is simply ignored rather
+        // than only being caught by `mainnet_safety_violations` (defense in
+        // depth). Testnet/localnet keep the env-driven default unchanged.
+        let use_faucet = if network == Network::Mainnet {
+            false
+        } else {
+            env_bool("USE_FAUCET", network.has_faucet())?
+        };
+
         let cfg = DeployConfig {
             network,
             arch_rpc_url,
@@ -422,7 +447,11 @@ impl DeployConfig {
                 )?,
             },
 
-            use_faucet: env_bool("USE_FAUCET", network.has_faucet())?,
+            use_faucet,
+            min_deployer_lamports: env_parse(
+                "MIN_DEPLOYER_LAMPORTS",
+                DEFAULT_MIN_DEPLOYER_LAMPORTS,
+            )?,
             output_path: env_or(
                 "OUTPUT_PATH",
                 &format!("deployments/{}.json", network.as_str()),
@@ -456,7 +485,9 @@ impl DeployConfig {
     ///
     /// Catches the two mainnet footguns:
     ///   1. `USE_FAUCET=true` — there is no faucet on mainnet; the deployer +
-    ///      admin must be funded out-of-band.
+    ///      admin must be funded out-of-band. NOTE: `from_env` already forces
+    ///      `use_faucet=false` on mainnet, so this branch only fires for a
+    ///      directly-constructed config — it is kept as defense in depth.
     ///   2. token mints still equal to the testnet PLACEHOLDER mints shipped in
     ///      `autara.mainnet.env` — a real run must use the genuine mainnet APL
     ///      mints, never the testnet placeholders.
@@ -607,6 +638,7 @@ mod tests {
             lending_market_fee_bps: 100,
             market_params: MarketParams::default(),
             use_faucet,
+            min_deployer_lamports: DEFAULT_MIN_DEPLOYER_LAMPORTS,
             output_path: "out.json".to_string(),
         }
     }
