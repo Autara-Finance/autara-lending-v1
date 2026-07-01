@@ -168,11 +168,12 @@ fn print_mainnet_funding_banner(
     };
     println!("================ MANUAL FUNDING REQUIRED (MAINNET) ================");
     println!("Fund these addresses with native lamports before deploying:");
-    println!("  deployer: {deployer}   balance: {}", fmt(deployer_balance));
-    println!("  admin:    {admin}   balance: {}", fmt(admin_balance));
     println!(
-        "  (deployer needs >= {min_deployer_lamports} lamports; admin must be funded > 0)"
+        "  deployer: {deployer}   balance: {}",
+        fmt(deployer_balance)
     );
+    println!("  admin:    {admin}   balance: {}", fmt(admin_balance));
+    println!("  (deployer needs >= {min_deployer_lamports} lamports; admin must be funded > 0)");
     if mint_supply_note {
         println!(
             "  note: STEP_MINT_INITIAL_SUPPLY is set — the mint authority account(s) also \
@@ -585,9 +586,7 @@ fn main() -> Result<()> {
             let deployer_ok = deployer_balance.is_some_and(|b| b >= cfg.min_deployer_lamports);
             let admin_ok = admin_balance.is_some_and(|b| b > 0);
             if !deployer_ok || !admin_ok {
-                bail!(
-                    "Insufficient funds — fund the address(es) above and re-run this deploy."
-                );
+                bail!("Insufficient funds — fund the address(es) above and re-run this deploy.");
             }
             Ok::<_, anyhow::Error>(())
         })?;
