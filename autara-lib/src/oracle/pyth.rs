@@ -58,6 +58,9 @@ impl OracleLoader for PythProvider {
 #[repr(C)]
 pub struct PythPriceAccount {
     pub pyth_price: PythPrice,
+    /// The only key allowed to update this feed. Bound to the creating signer
+    /// by the oracle program when the feed account is first initialized.
+    pub authority: Pubkey,
 }
 
 #[derive(Debug, Pod, Zeroable, Clone, Copy)]
@@ -162,7 +165,10 @@ pub mod tests {
             },
         };
 
-        let account = PythPriceAccount { pyth_price };
+        let account = PythPriceAccount {
+            pyth_price,
+            authority: create_test_pubkey(),
+        };
         let bytes = bytemuck::bytes_of(&account);
         bytes.to_vec()
     }
