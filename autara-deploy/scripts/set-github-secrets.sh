@@ -28,6 +28,8 @@
 #   - It defaults to --dry-run: nothing is sent to GitHub until you pass --apply.
 #   - `--generate` only writes into a gitignored key dir and refuses to clobber
 #     existing files without --force.
+#   - An explicit --dry-run with --generate is a pure simulation: key generation
+#     is only reported ("would generate"), NOTHING is written to disk.
 #
 set -euo pipefail
 
@@ -71,6 +73,9 @@ OPTIONAL:
   --apply               Actually call `gh secret set`. WITHOUT this it is a DRY RUN.
   --no-dry-run          Alias for --apply.
   --dry-run             Force dry run (the default). Prints the plan, sends nothing.
+                        When passed EXPLICITLY together with --generate, key
+                        generation is only simulated ("would generate"): no files
+                        or directories are created or modified on disk.
   -h, --help            Show this help.
 
 EXAMPLES:
@@ -105,6 +110,7 @@ FORCE=0
 RPC_URL=""
 REPO=""
 DRY_RUN=1   # default: dry-run
+DRY_RUN_EXPLICIT=0   # 1 only when --dry-run was passed on the command line
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -115,8 +121,8 @@ while [ $# -gt 0 ]; do
     --force)      FORCE=1; shift ;;
     --rpc-url)    RPC_URL="${2:-}"; shift 2 ;;
     --repo)       REPO="${2:-}"; shift 2 ;;
-    --apply|--no-dry-run) DRY_RUN=0; shift ;;
-    --dry-run)    DRY_RUN=1; shift ;;
+    --apply|--no-dry-run) DRY_RUN=0; DRY_RUN_EXPLICIT=0; shift ;;
+    --dry-run)    DRY_RUN=1; DRY_RUN_EXPLICIT=1; shift ;;
     -h|--help)    usage; exit 0 ;;
     *)            die "unknown argument: $1 (see --help)" ;;
   esac
@@ -144,11 +150,19 @@ else
   KEY_DIR="$FROM_DIR"
 fi
 
+# An explicit --dry-run combined with --generate is a pure simulation: nothing
+# on disk may be created, modified, or deleted (a real --generate against an
+# existing key dir once clobbered live keys).
+SIMULATE_GENERATE=0
+if [ "$GENERATE" -eq 1 ] && [ "$DRY_RUN_EXPLICIT" -eq 1 ]; then
+  SIMULATE_GENERATE=1
+fi
+
 # ---------------------------------------------------------------------------
 # Make sure the crate binary exists (used to derive pubkeys with the same loader
 # a real deploy uses, and — in --generate mode — to create the keys).
 # ---------------------------------------------------------------------------
-if [ ! -x "$BIN" ]; then
+if [ "$SIMULATE_GENERATE" -eq 0 ] && [ ! -x "$BIN" ]; then
   command -v cargo >/dev/null 2>&1 || die "autara-deploy binary not built and cargo not found; run: cargo build -p autara-deploy"
   echo "Building autara-deploy (needed to derive pubkeys)…" >&2
   ( cd "$REPO_ROOT" && cargo build -q -p autara-deploy ) || die "cargo build -p autara-deploy failed"
@@ -160,7 +174,23 @@ fi
 #   --generate : refuse to clobber without --force; the binary's loader creates
 #                any missing file in the compatible hex format on first load.
 # ---------------------------------------------------------------------------
-if [ "$GENERATE" -eq 1 ]; then
+if [ "$SIMULATE_GENERATE" -eq 1 ]; then
+  # Explicit --dry-run: only report what a real --generate would do. Nothing on
+  # disk is created, modified, or deleted (no mkdir, no rm, no key writes).
+  echo "[dry-run] --generate simulation for $KEY_DIR/ (nothing written to disk):" >&2
+  for f in "${FILES[@]}"; do
+    path="$REPO_ROOT/$KEY_DIR/$f"
+    if [ -e "$path" ]; then
+      if [ "$FORCE" -eq 1 ]; then
+        echo "  would OVERWRITE existing $KEY_DIR/$f (--force)" >&2
+      else
+        echo "  $KEY_DIR/$f already exists — a real run would REFUSE without --force" >&2
+      fi
+    else
+      echo "  would generate $KEY_DIR/$f" >&2
+    fi
+  done
+elif [ "$GENERATE" -eq 1 ]; then
   # The out dir must be gitignored so freshly generated secrets can never be
   # committed by accident.
   mkdir -p "$REPO_ROOT/$KEY_DIR" 2>/dev/null || mkdir -p "$KEY_DIR"
@@ -187,31 +217,37 @@ fi
 # preflight prints `program_id:`, `oracle_id:`, `deployer:`, `admin:` lines (all
 # x-only hex pubkeys). We run with a clean env (env -i) and an unreachable RPC so
 # nothing touches a real node and the committed env file cannot leak in. In
-# --generate mode this same call CREATES the missing key files.
+# --generate mode this same call CREATES the missing key files, so it MUST NOT
+# run in the --generate --dry-run simulation (placeholders are shown instead).
 # ---------------------------------------------------------------------------
-derive_out="$(
-  cd "$REPO_ROOT" && env -i HOME="$HOME" PATH="$PATH" \
-    NETWORK=localnet ARCH_RPC_URL=http://127.0.0.1:1 \
-    PROGRAM_KEY_PATH="$KEY_DIR/program.json" \
-    ORACLE_KEY_PATH="$KEY_DIR/oracle.json" \
-    DEPLOYER_KEY_PATH="$KEY_DIR/deployer.json" \
-    ADMIN_KEY_PATH="$KEY_DIR/admin.json" \
-    "$BIN" --dry-run 2>/dev/null || true
-)"
+if [ "$SIMULATE_GENERATE" -eq 1 ]; then
+  PUB_program="(not derived in --generate dry-run)"
+  PUBS=("$PUB_program" "$PUB_program" "$PUB_program" "$PUB_program")
+else
+  derive_out="$(
+    cd "$REPO_ROOT" && env -i HOME="$HOME" PATH="$PATH" \
+      NETWORK=localnet ARCH_RPC_URL=http://127.0.0.1:1 \
+      PROGRAM_KEY_PATH="$KEY_DIR/program.json" \
+      ORACLE_KEY_PATH="$KEY_DIR/oracle.json" \
+      DEPLOYER_KEY_PATH="$KEY_DIR/deployer.json" \
+      ADMIN_KEY_PATH="$KEY_DIR/admin.json" \
+      "$BIN" --dry-run 2>/dev/null || true
+  )"
 
-# Map role -> derived pubkey via the preflight label for that role.
-declare_pub() { awk -v pat="$1" '$1==pat{print $2; exit}' <<<"$derive_out"; }
-PUB_program="$(declare_pub 'program_id:')"
-PUB_oracle="$(declare_pub 'oracle_id:')"
-PUB_deployer="$(declare_pub 'deployer:')"
-PUB_admin="$(declare_pub 'admin:')"
+  # Map role -> derived pubkey via the preflight label for that role.
+  declare_pub() { awk -v pat="$1" '$1==pat{print $2; exit}' <<<"$derive_out"; }
+  PUB_program="$(declare_pub 'program_id:')"
+  PUB_oracle="$(declare_pub 'oracle_id:')"
+  PUB_deployer="$(declare_pub 'deployer:')"
+  PUB_admin="$(declare_pub 'admin:')"
 
-PUBS=("$PUB_program" "$PUB_oracle" "$PUB_deployer" "$PUB_admin")
-for i in "${!ROLES[@]}"; do
-  if ! printf '%s' "${PUBS[$i]}" | grep -qE '^[0-9a-f]{64}$'; then
-    die "could not derive a valid pubkey for ${ROLES[$i]} from $KEY_DIR/${FILES[$i]}"
-  fi
-done
+  PUBS=("$PUB_program" "$PUB_oracle" "$PUB_deployer" "$PUB_admin")
+  for i in "${!ROLES[@]}"; do
+    if ! printf '%s' "${PUBS[$i]}" | grep -qE '^[0-9a-f]{64}$'; then
+      die "could not derive a valid pubkey for ${ROLES[$i]} from $KEY_DIR/${FILES[$i]}"
+    fi
+  done
+fi
 
 # ---------------------------------------------------------------------------
 # Resolve the target repo (only needed for the plan display + apply).
