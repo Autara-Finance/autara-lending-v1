@@ -291,7 +291,9 @@ enum OracleCommands {
         feed: Vec<String>,
     },
 
-    /// Push a dummy price to the on-chain oracle (for testing)
+    /// Push a dummy price to the on-chain oracle (for testing).
+    /// The signer that first creates a feed becomes its bound authority;
+    /// later pushes to that feed must use the same signer.
     PushPrice {
         /// Pyth feed ID (hex, with or without 0x prefix)
         #[arg(long)]
@@ -302,7 +304,9 @@ enum OracleCommands {
         price: f64,
     },
 
-    /// Continuously fetch and push Pyth feeds to on-chain oracle
+    /// Continuously fetch and push Pyth feeds to on-chain oracle.
+    /// The signer that first creates a feed becomes its bound authority;
+    /// later pushes to that feed must use the same signer.
     PushFeeds {
         /// Pyth feed IDs (hex, with 0x prefix)
         #[arg(long, num_args = 1..)]
