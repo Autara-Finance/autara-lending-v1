@@ -1,0 +1,50 @@
+{
+  "network": "mainnet",
+  "arch_rpc_url": "https://rpc.mainnet.arch.network",
+  "deployed_at_unix": 1782929750,
+  "program_id": "2facfe33561907fb7ff8d6a9eb520fa9b2d6d5c0e72765a1a0b9f8766b6eb61e",
+  "oracle_id": "a2b2fe9e9f8a7122c88f091224333db15f7347671577c8552b93dd7640b6f98d",
+  "build_commit": "7391981",
+  "program_elf_path": "target/deploy/autara_program.so",
+  "program_elf_sha256": "6e6b5095f72bf71a5155a9e420f8e089dfcae160f0af45ea4668d26ce4e409f8",
+  "oracle_elf_path": "target/deploy/autara_oracle.so",
+  "oracle_elf_sha256": "8c4d42dc6ca11ad9650e6c80fcee38b111fec70baae46be2b7850893f17d3694",
+  "deployer": "559e2339ecfa1883f01bc6708fd68cb599bfa1f8b08e87e5cc110e1b8f1b8672",
+  "admin": "3c82cd53240b92f7a341ca1ea6b8dea263509a7e1a66efed3bf4e8bf24e23d91",
+  "fee_receiver": "3c82cd53240b92f7a341ca1ea6b8dea263509a7e1a66efed3bf4e8bf24e23d91",
+  "protocol_fee_share_bps": 5000,
+  "global_config": null,
+  "tokens": [
+    {
+      "label": "aUSD",
+      "mint": "fc35b60366647f7c72e1d3c3c8dc4908cca4f9707ea88059f06a7f41815de6ba",
+      "decimals": 6,
+      "mint_amount": 1000000000000,
+      "faucet_amount": 1000000000000
+    },
+    {
+      "label": "aBTC",
+      "mint": "f116f5a4ecc94b30d3cbe4885ff25e40c741a6446ef3a138bc39146ad2e6a324",
+      "decimals": 8,
+      "mint_amount": 1000000000000,
+      "faucet_amount": 1000000000000
+    }
+  ],
+  "markets": [
+    {
+      "supply_label": "aUSD",
+      "collateral_label": "aBTC",
+      "supply_mint": "fc35b60366647f7c72e1d3c3c8dc4908cca4f9707ea88059f06a7f41815de6ba",
+      "collateral_mint": "f116f5a4ecc94b30d3cbe4885ff25e40c741a6446ef3a138bc39146ad2e6a324",
+      "index": 0,
+      "market": "35c7addd9d44b7dfe1161e4a4e9ed459987056fd96def6f65167d321e316a757",
+      "created": true
+    }
+  ],
+  "transactions": [
+    {
+      "step": "create_market:aUSD/aBTC",
+      "txid": "59c2d7fa00329505f8c9b3149624af5da9b3f4a4aaaddf532e6a01aff97999c5"
+    }
+  ]
+}

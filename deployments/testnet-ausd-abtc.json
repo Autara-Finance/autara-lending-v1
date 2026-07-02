@@ -1,0 +1,54 @@
+{
+  "network": "testnet",
+  "arch_rpc_url": "https://rpc.testnet.arch.network",
+  "deployed_at_unix": 1782838328,
+  "program_id": "34cf72a92dd76322a42f13f99e51cf7c03221f4adbd4ee7e0c409c4161dfe20c",
+  "oracle_id": "8d24068aa026fd2e6ccca6e7b64a944b0e384df279b15f599ddd4a5285d592e8",
+  "build_commit": "da56e58",
+  "program_elf_path": "target/deploy/autara_program.so",
+  "program_elf_sha256": "f0cf1644dae17a3ebfa71a3eb11df0c3411de5cb5b3efa2a0966259778abeb0d",
+  "oracle_elf_path": "target/deploy/autara_oracle.so",
+  "oracle_elf_sha256": "8c4d42dc6ca11ad9650e6c80fcee38b111fec70baae46be2b7850893f17d3694",
+  "deployer": "a28851ef4616ffe966843c18d966c326d915ee2a3c861971aef2ac1c590e613f",
+  "admin": "dc9b490d714063ab92aa1edcd368b437cddd140bbb34663dba8d1e7f05daae86",
+  "fee_receiver": "dc9b490d714063ab92aa1edcd368b437cddd140bbb34663dba8d1e7f05daae86",
+  "protocol_fee_share_bps": 5000,
+  "global_config": "295e38899221566a25ae47433889bc85bdcb33cce1f25db88060665765a19e37",
+  "tokens": [
+    {
+      "label": "aUSD",
+      "mint": "8ec480c6e5458e7d37dc2a9f7d7d149a02d8182a38523b037905203ff36b71f6",
+      "decimals": 6,
+      "mint_amount": 1000000000000,
+      "faucet_amount": 1000000000000
+    },
+    {
+      "label": "aBTC",
+      "mint": "627ecd24366c89314b12aa08a1b2fffc3890cb9cf64fb04fe3e95c7182b23dfb",
+      "decimals": 8,
+      "mint_amount": 1000000000000,
+      "faucet_amount": 1000000000000
+    }
+  ],
+  "markets": [
+    {
+      "supply_label": "aUSD",
+      "collateral_label": "aBTC",
+      "supply_mint": "8ec480c6e5458e7d37dc2a9f7d7d149a02d8182a38523b037905203ff36b71f6",
+      "collateral_mint": "627ecd24366c89314b12aa08a1b2fffc3890cb9cf64fb04fe3e95c7182b23dfb",
+      "index": 0,
+      "market": "d8d679b946aafb22322f477cd5f196700f181aa3f712ca09e486fc77cedc0cce",
+      "created": true
+    }
+  ],
+  "transactions": [
+    {
+      "step": "mint_initial_supply:aBTC",
+      "txid": "e469456396dcd349724e58664922a173efc222e80545e9fd9f38d4bba399ec45"
+    },
+    {
+      "step": "create_market:aUSD/aBTC",
+      "txid": "b9c91be7cc2150657e63bc41d1eb411f9fcfc654d33602974e7b06dcf0356f5b"
+    }
+  ]
+}

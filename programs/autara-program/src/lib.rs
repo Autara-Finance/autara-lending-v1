@@ -32,7 +32,7 @@ pub mod utils;
 
 pub const fn id() -> Pubkey {
     Pubkey(hex_literal::hex!(
-        "34cf72a92dd76322a42f13f99e51cf7c03221f4adbd4ee7e0c409c4161dfe20c"
+        "2facfe33561907fb7ff8d6a9eb520fa9b2d6d5c0e72765a1a0b9f8766b6eb61e"
     ))
 }
 
