@@ -22,7 +22,8 @@ use autara_lib::{
     token::{create_ata_ix, get_associated_token_address},
 };
 use autara_pyth::{
-    fetch_and_push_feeds, fetch_pyth_price, get_pyth_account, AutaraPythPusherClient,
+    fetch_and_push_feeds, fetch_pyth_price, get_pyth_account, push_interval_from_env,
+    AutaraPythPusherClient,
 };
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{util::SubscriberInitExt, EnvFilter};
@@ -307,6 +308,11 @@ enum OracleCommands {
         /// Pyth feed IDs (hex, with 0x prefix)
         #[arg(long, num_args = 1..)]
         feed: Vec<String>,
+
+        /// Seconds between push iterations. Falls back to the
+        /// PUSH_INTERVAL_SECS env var, then to the default 5s.
+        #[arg(long)]
+        push_interval_secs: Option<u64>,
     },
 
     /// Show oracle feed info for a market
@@ -1115,7 +1121,10 @@ async fn handle_oracle_command(
             println!("Oracle Account: {:?}", oracle_account);
         }
 
-        OracleCommands::PushFeeds { feed } => {
+        OracleCommands::PushFeeds {
+            feed,
+            push_interval_secs,
+        } => {
             let feeds: Vec<String> = feed
                 .iter()
                 .map(|f| {
@@ -1127,15 +1136,27 @@ async fn handle_oracle_command(
                 })
                 .collect();
 
+            let push_interval = push_interval_secs
+                .map(Duration::from_secs)
+                .unwrap_or_else(push_interval_from_env);
             println!(
-                "Starting continuous Pyth feed pusher for {} feeds...",
-                feeds.len()
+                "Starting continuous Pyth feed pusher for {} feeds (every {:?})...",
+                feeds.len(),
+                push_interval
             );
             println!("Press Ctrl+C to stop.");
             for f in &feeds {
                 println!("  Feed: {}", f);
             }
-            fetch_and_push_feeds(rpc, &oracle_program_id, &signer_keypair, &feeds, network).await;
+            fetch_and_push_feeds(
+                rpc,
+                &oracle_program_id,
+                &signer_keypair,
+                &feeds,
+                network,
+                push_interval,
+            )
+            .await;
         }
 
         OracleCommands::MarketFeeds { market } => {

@@ -380,6 +380,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 &pusher_signer,
                 &feeds,
                 network,
+                autara_pyth::push_interval_from_env(),
             )
             .await;
         });

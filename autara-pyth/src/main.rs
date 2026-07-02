@@ -1,6 +1,6 @@
 use arch_program::bitcoin::Network;
 use arch_sdk::{generate_new_keypair, AsyncArchRpcClient, Config};
-use autara_pyth::fetch_and_push_feeds;
+use autara_pyth::{fetch_and_push_feeds, push_interval_from_env};
 use clap::Parser;
 
 #[derive(clap::Parser, Debug)]
@@ -20,6 +20,10 @@ struct Args {
         default_value = DEFAULT_FEEDS
     )]
     feeds: Vec<String>,
+    /// Seconds between push iterations. Falls back to the PUSH_INTERVAL_SECS
+    /// env var, then to the default 5s.
+    #[clap(long)]
+    push_interval_secs: Option<u64>,
 }
 
 const DEFAULT_FEEDS:&str = "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43,0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a";
@@ -56,12 +60,17 @@ pub async fn main() {
 
     let oracle_program_id =
         arch_program::pubkey::Pubkey::from_slice(&hex::decode(&args.program_id).unwrap());
+    let push_interval = args
+        .push_interval_secs
+        .map(std::time::Duration::from_secs)
+        .unwrap_or_else(push_interval_from_env);
     fetch_and_push_feeds(
         &client,
         &oracle_program_id,
         &authority_keypair,
         &args.feeds,
         args.network,
+        push_interval,
     )
     .await
 }

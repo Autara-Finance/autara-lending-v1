@@ -18,6 +18,17 @@ pub const USDC_FEED: &str = "0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2
 pub const ETH_FEED: &str = "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
 const ORACLE_PUSH_TIMEOUT: Duration = Duration::from_secs(20);
 const DIA_FALLBACK_EXPO: i32 = -8;
+pub const DEFAULT_PUSH_INTERVAL_SECS: u64 = 5;
+
+/// Push-loop interval: the `PUSH_INTERVAL_SECS` env var if set (and a valid
+/// u64), otherwise the default 5s that has always been used.
+pub fn push_interval_from_env() -> Duration {
+    let secs = std::env::var("PUSH_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_PUSH_INTERVAL_SECS);
+    Duration::from_secs(secs)
+}
 
 pub async fn fetch_and_push_feeds(
     client: &AsyncArchRpcClient,
@@ -25,10 +36,11 @@ pub async fn fetch_and_push_feeds(
     signer: &Keypair,
     feeds: &[impl AsRef<str>],
     bitcoin_network: Network,
+    push_interval: Duration,
 ) {
     let signer_pubkey = Pubkey::from_slice(&signer.x_only_public_key().0.serialize());
     loop {
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(push_interval).await;
         let price_result = match fetch_pyth_price(feeds).await {
             Ok(ok) => ok,
             Err(err) => {
