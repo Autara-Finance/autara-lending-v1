@@ -1,0 +1,21 @@
+{
+  "_note": "PLACEHOLDER - final mainnet deployment pending. This file will be replaced by the real deployment artifact (final mint addresses and program IDs). See test-mainnet.json for the pipeline test run.",
+  "network": "mainnet",
+  "arch_rpc_url": "https://rpc.mainnet.arch.network",
+  "deployed_at_unix": null,
+  "program_id": null,
+  "oracle_id": null,
+  "build_commit": null,
+  "program_elf_path": "target/deploy/autara_program.so",
+  "program_elf_sha256": null,
+  "oracle_elf_path": "target/deploy/autara_oracle.so",
+  "oracle_elf_sha256": null,
+  "deployer": null,
+  "admin": null,
+  "fee_receiver": null,
+  "protocol_fee_share_bps": 5000,
+  "global_config": null,
+  "tokens": [],
+  "markets": [],
+  "transactions": []
+}
