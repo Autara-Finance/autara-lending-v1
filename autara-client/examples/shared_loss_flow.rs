@@ -17,14 +17,25 @@
 //
 // This is a FRESH, SELF-CONTAINED market with FRESH oracle feeds created by the
 // test harness (AutaraTestEnv). It NEVER touches the shared aUSD/aBTC market.
-// It runs against the Autara *stage* program on testnet by default (same target
-// the integration-test suite uses).
 //
-// Run:
+// TARGET (defaults reproduce the original *stage* run):
+//   By default it runs against the Autara stage program on testnet with a
+//   harness-generated curator, signing with Regtest (same as before). Env knobs
+//   let it target ANY deployment (e.g. our fresh testnet stack) without editing
+//   code:
+//     SL_PROGRAM_ID   lending program id (hex)         [default: stage program]
+//     SL_ORACLE_ID    oracle program id (hex)          [default: stage oracle]
+//     SL_CURATOR_KEY  path to a secret-key file; this signer creates the market
+//                     and calls socialize_loss/donate  [default: harness authority]
+//     SL_NETWORK      signing network testnet4|testnet|regtest|mainnet [default: regtest]
+//     SL_RPC          arch rpc url                     [default: testnet rpc]
+//     SL_VERIFY_ONLY  =1 -> run only the permissionless-push pre-flight and exit
+//
+// Run (stage, unchanged):
 //   cargo run -p autara-client --example shared_loss_flow
 //
-// Env knobs (all optional; defaults give a realistic 70% LTV loan hit by a 60%
-// collateral crash):
+// Amount knobs (all optional; defaults give a realistic 70% LTV loan hit by a
+// 60% collateral crash):
 //   SL_SUPPLY_UNITS      supplier A deposit, whole supply units   (default 200000)
 //   SL_COLLATERAL_UNITS  borrower B collateral, whole units       (default 1)
 //   SL_BORROW_UNITS      borrower B borrow, whole supply units    (default 70000)
@@ -37,7 +48,7 @@
 use anyhow::{anyhow, Context, Result};
 use arch_sdk::{
     arch_program::{bitcoin::key::Keypair, bitcoin::Network, pubkey::Pubkey},
-    Status,
+    generate_new_keypair, with_secret_key_file, AsyncArchRpcClient, Config, Status,
 };
 use autara_client::{
     client::{
@@ -50,10 +61,18 @@ use autara_client::{
 };
 use autara_lib::{
     interest_rate::interest_rate_kind::InterestRateCurveKind, ixs::CreateMarketInstruction,
-    math::ifixed_point::IFixedPoint, pda::find_borrow_position_pda, state::market_config::LtvConfig,
+    math::ifixed_point::IFixedPoint, oracle::pyth::PythPrice, pda::find_borrow_position_pda,
+    state::market_config::LtvConfig,
 };
+use autara_pyth::{get_pyth_account, AutaraPythPusherClient};
 
 const DECIMALS_POW: u64 = 1_000_000_000; // 9 decimals => 1 unit = 1e9 atoms
+
+// SAFETY: real BTC/USDC feed ids that MUST NEVER be pushed by this proof.
+const REAL_BTC_FEED: &str = "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43";
+const REAL_USDC_FEED: &str = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a";
+// SAFETY: the shared aUSD/aBTC market that MUST NEVER be touched.
+const SHARED_MARKET: &str = "d8d679b946aafb22322f477cd5f196700f181aa3f712ca09e486fc77cedc0cce";
 
 fn env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key)
@@ -67,6 +86,24 @@ fn env_f64(key: &str, default: f64) -> f64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+fn env_or(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn parse_network(s: &str) -> Network {
+    match s.to_ascii_lowercase().as_str() {
+        "testnet4" => Network::Testnet4,
+        "testnet" => Network::Testnet,
+        "regtest" => Network::Regtest,
+        "mainnet" | "bitcoin" => Network::Bitcoin,
+        other => panic!("unknown SL_NETWORK={other} (use testnet4|testnet|regtest|mainnet)"),
+    }
+}
+
+fn pk_from_hex(h: &str) -> Pubkey {
+    Pubkey::from_slice(&hex::decode(h).expect("valid hex pubkey"))
 }
 
 fn pv(b: bool) -> &'static str {
@@ -117,6 +154,75 @@ fn supply_redeemable(
         .unwrap_or(0)
 }
 
+/// Pre-flight: confirm that price pushes to this oracle are PERMISSIONLESS by
+/// creating a FRESH fake feed (random 32-byte id) and pushing to it with an
+/// arbitrary, unrelated signer. Reports the on-chain feed account size (legacy
+/// pre-authority feeds are exactly one `PythPrice` = 120 bytes). Returns the
+/// feed account data length on success.
+async fn verify_permissionless_push(
+    rpc: &AsyncArchRpcClient,
+    oracle_id: &Pubkey,
+    network: Network,
+) -> Result<usize> {
+    println!("== PRE-FLIGHT: verify permissionless push + feed layout ==");
+    // Arbitrary signer unrelated to curator/admin.
+    let (signer, signer_pk, _) = generate_new_keypair(network);
+    rpc.create_and_fund_account_with_faucet(&signer)
+        .await
+        .context("faucet-fund arbitrary push signer")?;
+    // Fresh random fake feed id (a brand new keypair's pubkey bytes).
+    let (_k, feed_pk, _) = generate_new_keypair(network);
+    let feed_id = feed_pk.0;
+    let feed_hex = hex::encode(feed_id);
+    // Guard: never collide with the real BTC/USDC feeds.
+    assert!(
+        feed_hex != REAL_BTC_FEED && feed_hex != REAL_USDC_FEED,
+        "generated feed id collides with a REAL feed id -- aborting"
+    );
+    println!(
+        "    arbitrary signer = {}",
+        hex::encode(signer_pk.serialize())
+    );
+    println!("    fresh fake feed id = {feed_hex}");
+
+    let price = PythPrice::from_dummy(feed_id, 123.45);
+    AutaraPythPusherClient {
+        client: rpc.clone(),
+        autara_oracle_program_id: *oracle_id,
+        network,
+    }
+    .push_pyth_price(&signer, feed_id, &price)
+    .await
+    .context("push to fresh fake feed with arbitrary signer")?;
+
+    let pyth_account = get_pyth_account(oracle_id, feed_id);
+    let acc = rpc
+        .read_account_info(pyth_account)
+        .await
+        .context("read back fresh feed account")?;
+    let owner_ok = acc.owner == *oracle_id;
+    let len = acc.data.len();
+    let legacy_120 = len == core::mem::size_of::<PythPrice>();
+    // decode the price (legacy layout is exactly one PythPrice at the front)
+    let stored: Option<&PythPrice> = bytemuck::try_from_bytes::<PythPrice>(
+        &acc.data[..core::mem::size_of::<PythPrice>().min(len)],
+    )
+    .ok();
+    let id_ok = stored.map(|p| p.id == feed_id).unwrap_or(false);
+    println!(
+        "    feed account = {} owner_ok={owner_ok} size={len} bytes (legacy120={legacy_120}) id_ok={id_ok}",
+        hex::encode(pyth_account.serialize())
+    );
+    if !(owner_ok && id_ok) {
+        return Err(anyhow!(
+            "permissionless push verification FAILED (owner_ok={owner_ok} id_ok={id_ok}); \
+             the oracle may be authority-gated -- STOP and escalate (redeploy is a human decision)"
+        ));
+    }
+    println!("    => PERMISSIONLESS PUSH CONFIRMED");
+    Ok(len)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let supply_atoms = env_u64("SL_SUPPLY_UNITS", 200_000) * DECIMALS_POW;
@@ -126,28 +232,89 @@ async fn main() -> Result<()> {
     let collateral_price = env_f64("SL_COLLATERAL_PRICE", 100_000.0);
     let crash_price = env_f64("SL_CRASH_PRICE", 40_000.0);
 
-    // Signing network for the stage deployment (matches the integration tests).
-    let network = Network::Regtest;
+    // Target selection (defaults reproduce the stage run).
+    let network = parse_network(&env_or("SL_NETWORK", "regtest"));
+    let program_id = std::env::var("SL_PROGRAM_ID")
+        .map(|h| pk_from_hex(&h))
+        .unwrap_or_else(|_| autara_stage_program_id());
+    let oracle_id = std::env::var("SL_ORACLE_ID")
+        .map(|h| pk_from_hex(&h))
+        .unwrap_or_else(|_| autara_oracle_stage_program_id());
 
-    let config = ArchConfig::testnet();
-    let arch_client = config.arch_rpc_client();
-    println!("== SETUP: fresh market + fresh oracle feeds (stage program on testnet) ==");
-    let env = AutaraTestEnv::new(
-        arch_client.clone(),
-        autara_stage_program_id(),
-        autara_oracle_stage_program_id(),
-    )
-    .await
-    .context("create test env (fund keypairs, mint tokens, create feeds)")?;
+    // Build the rpc client honoring SL_NETWORK so faucet funding matches the
+    // network used to sign every other transaction.
+    let base = ArchConfig::testnet();
+    let config = Config {
+        arch_node_url: env_or("SL_RPC", &base.arch_node_url),
+        node_endpoint: base.bitcoin_node_endpoint.clone(),
+        node_username: base.bitcoin_node_username.clone(),
+        node_password: base.bitcoin_node_password.clone(),
+        network,
+        titan_url: String::new(),
+    };
+    let arch_client = AsyncArchRpcClient::new(&config);
 
-    // Roles.
-    let curator = env.authority_keypair; // creates the market, socializes, donates
+    println!("== TARGET ==");
+    println!("    program = {}", hex::encode(program_id.serialize()));
+    println!("    oracle  = {}", hex::encode(oracle_id.serialize()));
+    println!("    network = {network:?}");
+    println!("    rpc     = {}", config.arch_node_url);
+
+    // ---- PRE-FLIGHT: permissionless-push verification (always) ----
+    let feed_size = verify_permissionless_push(&arch_client, &oracle_id, network).await?;
+
+    if env_or("SL_VERIFY_ONLY", "0") == "1" {
+        println!("\nSL_VERIFY_ONLY=1 -> feed_size={feed_size}; skipping the full flow.");
+        return Ok(());
+    }
+
+    println!("\n== SETUP: fresh market + fresh oracle feeds ==");
+    let env = AutaraTestEnv::new_with_network(arch_client.clone(), program_id, oracle_id, network)
+        .await
+        .context("create test env (fund keypairs, mint tokens, create feeds)")?;
+
+    // Roles. The curator creates the market, socializes, and donates. By default
+    // it is the harness authority (stage behavior); override with SL_CURATOR_KEY
+    // (e.g. our admin.json) to prove against a real deployment's admin.
+    let (curator, curator_overridden) = match std::env::var("SL_CURATOR_KEY") {
+        Ok(path) => {
+            let (kp, _pk) = with_secret_key_file(&path)
+                .map_err(|e| anyhow!("load SL_CURATOR_KEY {path}: {e}"))?;
+            (kp, true)
+        }
+        Err(_) => (env.authority_keypair, false),
+    };
     let supplier_a = env.user_two_keypair; // the lender who eats the loss
     let borrower_b = env.user_keypair; // the bad borrower
     let curator_pk = Pubkey::from_slice(&curator.x_only_public_key().0.serialize());
     let borrower_pk = env.user_pubkey;
     let supply_mint = env.supply_mint;
     let collateral_mint = env.collateral_mint;
+
+    // SAFETY guards: we must never operate on the shared market or its mints.
+    // The market PDA is derived from (curator, supply_mint, collateral_mint,
+    // index); harness mints are freshly generated so this can never be the
+    // shared market, but assert the mints are fresh regardless.
+    assert!(hex::encode(supply_mint.serialize()) != SHARED_MARKET);
+    assert!(hex::encode(collateral_mint.serialize()) != SHARED_MARKET);
+
+    // If the curator is an external key (admin.json) it will not hold harness
+    // tokens: fund it and mint enough supply tokens for the donate step.
+    if curator_overridden {
+        if let Err(e) = arch_client
+            .create_and_fund_account_with_faucet(&curator)
+            .await
+        {
+            println!("    curator faucet note: {e}");
+        }
+        env.supply_minter
+            .mint_to(
+                &curator_pk,
+                donate_atoms.saturating_mul(2).max(donate_atoms),
+            )
+            .await
+            .context("mint supply tokens to overridden curator for donate_supply")?;
+    }
 
     // Healthy starting prices: supply asset = $1, collateral = $collateral_price.
     tokio::try_join!(
@@ -156,7 +323,6 @@ async fn main() -> Result<()> {
     )
     .context("push initial prices")?;
 
-    let program_id = env.autara_program_pubkey;
     let mut client =
         AutaraFullClientWithSigner::new_simple(arch_client.clone(), network, program_id, curator);
     client.full_reload().await?;
@@ -185,8 +351,26 @@ async fn main() -> Result<()> {
         .await
         .context("create_market")?;
     client.full_reload().await?;
+    // Final safety assertion: the market we created is NOT the shared market.
+    assert!(
+        hex::encode(market.serialize()) != SHARED_MARKET,
+        "refusing to operate on the shared aUSD/aBTC market"
+    );
     println!("    market = {}", hex::encode(market.serialize()));
-    println!("    curator (creator) = {}", hex::encode(curator_pk.serialize()));
+    println!(
+        "    curator (creator) = {}",
+        hex::encode(curator_pk.serialize())
+    );
+    println!("    supply_mint = {}", hex::encode(supply_mint.serialize()));
+    println!(
+        "    collateral_mint = {}",
+        hex::encode(collateral_mint.serialize())
+    );
+    println!("    supply_feed = {}", hex::encode(env.supply_feed_id));
+    println!(
+        "    collateral_feed = {}",
+        hex::encode(env.collateral_feed_id)
+    );
 
     let position = find_borrow_position_pda(&program_id, &market, &borrower_pk).0;
     let rpc = arch_client.clone();
@@ -194,13 +378,24 @@ async fn main() -> Result<()> {
 
     // ---- STEP 1: supplier A supplies liquidity ----
     println!("\n== STEP 1: supplier A supplies {supply_atoms} atoms ==");
-    let tx = client.with_signer(supplier_a).tx_builder().supply(&market, supply_atoms).await?;
+    let tx = client
+        .with_signer(supplier_a)
+        .tx_builder()
+        .supply(&market, supply_atoms)
+        .await?;
     let tx1 = send_tx(&rpc, network, &supplier_a, tx, "supply").await?;
     client.full_reload().await?;
     let redeemable_start = supply_redeemable(&client, &market, supplier_a);
     let pass1 = redeemable_start >= supply_atoms - 2;
-    println!("    ASSERT supplier A redeemable ~= supplied -> {redeemable_start} => {}", pv(pass1));
-    results.push((format!("1 supply (tx {tx1})"), pass1, format!("redeemable={redeemable_start}")));
+    println!(
+        "    ASSERT supplier A redeemable ~= supplied -> {redeemable_start} => {}",
+        pv(pass1)
+    );
+    results.push((
+        format!("1 supply (tx {tx1})"),
+        pass1,
+        format!("redeemable={redeemable_start}"),
+    ));
 
     // ---- STEP 2: borrower B deposits collateral ----
     println!("\n== STEP 2: borrower B deposits {collateral_atoms} collateral atoms ==");
@@ -217,17 +412,30 @@ async fn main() -> Result<()> {
         .map(|h| h.collateral_atoms)
         .unwrap_or(0);
     let pass2 = coll_deposited == collateral_atoms;
-    println!("    ASSERT collateral_atoms == {collateral_atoms} -> {coll_deposited} => {}", pv(pass2));
-    results.push((format!("2 deposit_collateral (tx {tx2})"), pass2, format!("collateral={coll_deposited}")));
+    println!(
+        "    ASSERT collateral_atoms == {collateral_atoms} -> {coll_deposited} => {}",
+        pv(pass2)
+    );
+    results.push((
+        format!("2 deposit_collateral (tx {tx2})"),
+        pass2,
+        format!("collateral={coll_deposited}"),
+    ));
 
     // ---- STEP 3: borrower B borrows near max LTV ----
     println!("\n== STEP 3: borrower B borrows {borrow_atoms} atoms (near max LTV) ==");
     // refresh oracle so the borrow health check reads a non-stale price
     env.push_collateral_price(collateral_price).await?;
-    let tx = client.with_signer(borrower_b).tx_builder().borrow(&market, borrow_atoms).await?;
+    let tx = client
+        .with_signer(borrower_b)
+        .tx_builder()
+        .borrow(&market, borrow_atoms)
+        .await?;
     let tx3 = send_tx(&rpc, network, &borrower_b, tx, "borrow").await?;
     client.full_reload().await?;
-    let health_healthy = client.with_signer(borrower_b).get_borrow_position_health(&market)?;
+    let health_healthy = client
+        .with_signer(borrower_b)
+        .get_borrow_position_health(&market)?;
     let ltv_healthy = health_healthy.ltv.to_float();
     let pass3 = health_healthy.borrowed_atoms >= borrow_atoms && ltv_healthy < 0.8;
     println!(
@@ -235,29 +443,82 @@ async fn main() -> Result<()> {
         health_healthy.borrowed_atoms,
         pv(pass3)
     );
-    results.push((format!("3 borrow (tx {tx3})"), pass3, format!("ltv={ltv_healthy:.4}")));
+    results.push((
+        format!("3 borrow (tx {tx3})"),
+        pass3,
+        format!("ltv={ltv_healthy:.4}"),
+    ));
 
     // snapshot BEFORE the crash/socialize
     let redeemable_before = supply_redeemable(&client, &market, supplier_a);
     let curator_bal_before = rpc.get_all_balances(&curator_pk).await.unwrap_or_default();
-    let curator_coll_before = curator_bal_before.get(&collateral_mint).copied().unwrap_or(0);
+    let curator_coll_before = curator_bal_before
+        .get(&collateral_mint)
+        .copied()
+        .unwrap_or(0);
     let curator_supply_before = curator_bal_before.get(&supply_mint).copied().unwrap_or(0);
 
     // ---- STEP 4: crash the collateral price so the position is underwater ----
     println!("\n== STEP 4: crash collateral price {collateral_price} -> {crash_price} ==");
     env.push_collateral_price(crash_price).await?;
     client.full_reload().await?;
-    let health_crashed = client.with_signer(borrower_b).get_borrow_position_health(&market)?;
+    let health_crashed = client
+        .with_signer(borrower_b)
+        .get_borrow_position_health(&market)?;
     let ltv_crashed = health_crashed.ltv.to_float();
     let pass4 = health_crashed.ltv > IFixedPoint::one();
-    println!("    ASSERT ltv > 1.0 (underwater) -> ltv={ltv_crashed:.4} => {}", pv(pass4));
-    results.push((format!("4 price crash"), pass4, format!("ltv={ltv_crashed:.4}")));
+    println!(
+        "    ASSERT ltv > 1.0 (underwater) -> ltv={ltv_crashed:.4} => {}",
+        pv(pass4)
+    );
+    results.push((
+        format!("4 price crash"),
+        pass4,
+        format!("ltv={ltv_crashed:.4}"),
+    ));
 
-    // ---- STEP 5: curator socializes the loss ----
-    println!("\n== STEP 5: curator calls socialize_loss ==");
+    // ---- STEP 5a: NON-curator socialize_loss MUST be rejected ----
+    println!("\n== STEP 5a: non-curator socialize_loss must be REJECTED ==");
+    env.push_collateral_price(crash_price).await?;
+    env.push_supply_price(1.0).await?;
+    let non_curator_rejected = match client
+        .with_signer(borrower_b)
+        .tx_builder()
+        .socialize_loss(&market, &position)
+        .await
+    {
+        Ok(tx) => {
+            // Built ok; sending it must fail on-chain (curator check).
+            let signed = tx.sign(std::slice::from_ref(&borrower_b), network);
+            match rpc.send_transaction(signed).await {
+                Ok(txid) => {
+                    let processed = rpc.wait_for_processed_transaction(&txid).await?;
+                    !matches!(processed.status, Status::Processed)
+                }
+                Err(_) => true,
+            }
+        }
+        Err(_) => true,
+    };
+    println!(
+        "    ASSERT non-curator socialize_loss rejected -> {}",
+        pv(non_curator_rejected)
+    );
+    results.push((
+        "5a non-curator socialize_loss rejected".to_string(),
+        non_curator_rejected,
+        format!("rejected={non_curator_rejected}"),
+    ));
+
+    // ---- STEP 5b: curator socializes the loss ----
+    println!("\n== STEP 5b: curator calls socialize_loss ==");
     env.push_collateral_price(crash_price).await?; // keep feed fresh for the tx
     env.push_supply_price(1.0).await?;
-    let tx = client.with_signer(curator).tx_builder().socialize_loss(&market, &position).await?;
+    let tx = client
+        .with_signer(curator)
+        .tx_builder()
+        .socialize_loss(&market, &position)
+        .await?;
     let tx5 = send_tx(&rpc, network, &curator, tx, "socialize_loss").await?;
     client.full_reload().await?;
 
@@ -268,38 +529,52 @@ async fn main() -> Result<()> {
         .map(|h| h.borrowed_atoms)
         .unwrap_or(0);
     let curator_bal_after = rpc.get_all_balances(&curator_pk).await.unwrap_or_default();
-    let curator_coll_after = curator_bal_after.get(&collateral_mint).copied().unwrap_or(0);
+    let curator_coll_after = curator_bal_after
+        .get(&collateral_mint)
+        .copied()
+        .unwrap_or(0);
     let curator_supply_after = curator_bal_after.get(&supply_mint).copied().unwrap_or(0);
 
     let writedown = redeemable_before.saturating_sub(redeemable_after);
     let coll_swept = curator_coll_after.saturating_sub(curator_coll_before);
 
-    // 5a: supplier A written down by ~ the socialized debt
+    // 5b-i: supplier A written down by ~ the socialized debt
     let pass5a = writedown >= borrow_atoms.saturating_sub(2);
     println!(
         "    ASSERT supplier A written down by ~debt -> before={redeemable_before} after={redeemable_after} writedown={writedown} (debt~{borrow_atoms}) => {}",
         pv(pass5a)
     );
-    // 5b: bad position's debt cleared to zero
+    // 5b-ii: bad position's debt cleared to zero
     let pass5b = debt_after == 0;
-    println!("    ASSERT bad position debt == 0 -> {debt_after} => {}", pv(pass5b));
-    // 5c: curator received ALL the collateral
+    println!(
+        "    ASSERT bad position debt == 0 -> {debt_after} => {}",
+        pv(pass5b)
+    );
+    // 5b-iii: curator received ALL the collateral
     let pass5c = coll_swept == collateral_atoms;
     println!(
         "    ASSERT curator swept collateral == {collateral_atoms} -> {coll_swept} => {}",
         pv(pass5c)
     );
-    // 5d: curator paid NOTHING into the pool (supply balance unchanged)
+    // 5b-iv: curator paid NOTHING into the pool (supply balance unchanged)
     let pass5d = curator_supply_after == curator_supply_before;
     println!(
         "    ASSERT curator supply balance unchanged (paid nothing) -> before={curator_supply_before} after={curator_supply_after} => {}",
         pv(pass5d)
     );
-    results.push((format!("5 socialize_loss (tx {tx5})"), pass5a && pass5b && pass5c && pass5d, format!("writedown={writedown} debt_after={debt_after} coll_swept={coll_swept}")));
+    results.push((
+        format!("5b socialize_loss (tx {tx5})"),
+        pass5a && pass5b && pass5c && pass5d,
+        format!("writedown={writedown} debt_after={debt_after} coll_swept={coll_swept}"),
+    ));
 
     // ---- STEP 6: curator adds back (discretionary) after off-chain sale ----
     println!("\n== STEP 6: curator donates {donate_atoms} back (simulated off-chain recovery) ==");
-    let tx = client.with_signer(curator).tx_builder().donate_supply(&market, donate_atoms).await?;
+    let tx = client
+        .with_signer(curator)
+        .tx_builder()
+        .donate_supply(&market, donate_atoms)
+        .await?;
     let tx6 = send_tx(&rpc, network, &curator, tx, "donate_supply").await?;
     client.full_reload().await?;
     let redeemable_recovered = supply_redeemable(&client, &market, supplier_a);
@@ -315,7 +590,11 @@ async fn main() -> Result<()> {
     );
     let net_loss = redeemable_before.saturating_sub(redeemable_recovered);
     println!("    NET supplier A loss (debt - add-back) = {net_loss} atoms");
-    results.push((format!("6 donate_supply (tx {tx6})"), pass6, format!("recovery={recovery} net_loss={net_loss}")));
+    results.push((
+        format!("6 donate_supply (tx {tx6})"),
+        pass6,
+        format!("recovery={recovery} net_loss={net_loss}"),
+    ));
 
     // ---- summary ----
     println!("\n================ SUMMARY ================");
