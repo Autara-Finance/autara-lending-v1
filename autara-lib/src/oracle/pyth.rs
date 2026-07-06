@@ -32,24 +32,35 @@ impl OracleLoader for PythProvider {
             return Err(LendingError::InvalidPythOracleAccount.into())
                 .with_msg("Invalid program id");
         }
-        let pyth_price = bytemuck::try_from_bytes::<PythPriceAccount>(&view.data)
-            .map_err(|_| LendingError::InvalidPythOracleAccount)?;
-        if pyth_price.pyth_price.id != self.feed_id {
+        let pyth_price: &PythPrice = match bytemuck::try_from_bytes::<PythPriceAccount>(&view.data)
+        {
+            Ok(account) => &account.pyth_price,
+            // Legacy feed accounts created before the trailing `authority`
+            // field was added are exactly one `PythPrice`. Only host-side
+            // clients tolerate them (existing testnet feeds predate the
+            // layout change); on-chain programs stay strict since fresh
+            // deploys only ever create new-layout accounts.
+            #[cfg(feature = "client")]
+            Err(_) if view.data.len() == core::mem::size_of::<PythPrice>() => {
+                bytemuck::try_from_bytes::<PythPrice>(&view.data)
+                    .map_err(|_| LendingError::InvalidPythOracleAccount)?
+            }
+            Err(_) => return Err(LendingError::InvalidPythOracleAccount.into()),
+        };
+        if pyth_price.id != self.feed_id {
             return Err(LendingError::InvalidOracleFeedId.into());
         }
-        if pyth_price.pyth_price.price.expo > MAX_EXPONENT_ABS
-            || pyth_price.pyth_price.price.expo < -MAX_EXPONENT_ABS
-        {
+        if pyth_price.price.expo > MAX_EXPONENT_ABS || pyth_price.price.expo < -MAX_EXPONENT_ABS {
             return Err(LendingError::InvalidPythOracleAccount.into()).with_msg("Invalid exponent");
         }
-        let expo = pyth_price.pyth_price.price.expo as i8;
+        let expo = pyth_price.price.expo as i8;
         Ok(UncheckedOracleRate::new(
             OracleRate::try_from_price_expo_conf(
-                pyth_price.pyth_price.price.price,
-                pyth_price.pyth_price.price.conf,
+                pyth_price.price.price,
+                pyth_price.price.conf,
                 expo,
             )?,
-            pyth_price.pyth_price.price.publish_time,
+            pyth_price.price.publish_time,
         ))
     }
 }
@@ -171,6 +182,26 @@ pub mod tests {
         };
         let bytes = bytemuck::bytes_of(&account);
         bytes.to_vec()
+    }
+
+    /// Legacy testnet feed accounts predate the trailing `authority` field and
+    /// are exactly one `PythPrice` (no authority). Host-side clients must still
+    /// load them; see the fallback in `load_oracle_price`.
+    #[cfg(feature = "client")]
+    #[test]
+    fn test_load_oracle_price_legacy_layout_without_authority() {
+        let provider = create_pyth_provider();
+        let key = create_test_pubkey();
+        let owner = create_test_pubkey();
+
+        let full = create_pyth_price_account(create_test_feed_id(), 10000000000u64, 5000000u64, -8);
+        // Strip the trailing authority pubkey -> legacy account layout.
+        let legacy = full[..core::mem::size_of::<PythPrice>()].to_vec();
+
+        let result = provider.load_oracle_price((&key, legacy, &owner).into());
+        assert!(result.is_ok());
+        let oracle_rate = result.unwrap().unsafe_rate();
+        assert_eq!(oracle_rate.rate(), IFixedPoint::from(100));
     }
 
     #[test]
