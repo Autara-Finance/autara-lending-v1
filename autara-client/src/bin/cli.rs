@@ -48,6 +48,10 @@ struct Cli {
     #[arg(long, default_value = "tokens.json")]
     tokens: String,
 
+    /// Autara program id (hex or base58). Defaults to the stage program id.
+    #[arg(long)]
+    program_id: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -242,6 +246,17 @@ enum TxCommands {
         #[arg(long)]
         amount: u64,
     },
+
+    /// Socialize the loss of an underwater borrow position (curator only, requires LTV >= 1)
+    SocializeLoss {
+        /// Market pubkey
+        #[arg(long)]
+        market: String,
+
+        /// Authority of the borrow position to socialize
+        #[arg(long)]
+        authority: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -392,13 +407,15 @@ async fn main() -> Result<()> {
     let signer_pubkey = Pubkey::from_slice(&signer.x_only_public_key().0.serialize());
     tracing::info!("Using signer: {:?}", signer_pubkey);
 
+    // Resolve program id (default: stage program id)
+    let program_id = match cli.program_id {
+        Some(ref s) => parse_pubkey(s)?,
+        None => autara_stage_program_id(),
+    };
+
     // Create client
-    let mut client = AutaraFullClientWithSigner::new_simple(
-        arch_client,
-        network,
-        autara_stage_program_id(),
-        signer,
-    );
+    let mut client =
+        AutaraFullClientWithSigner::new_simple(arch_client, network, program_id, signer);
 
     // Load state
     tracing::info!("Loading protocol state...");
@@ -736,6 +753,41 @@ async fn handle_tx_command(
             println!("Donating {} atoms to market {:?}...", amount, market_key);
             let events = client.donate_supply(&market_key, amount).await?;
             println!("Donate supply successful!");
+            println!("Events: {:#?}", events);
+        }
+
+        TxCommands::SocializeLoss { market, authority } => {
+            let market_key = parse_pubkey(&market)?;
+            let authority_key = parse_pubkey(&authority)?;
+            let (position_key, position) = client
+                .read_client()
+                .get_borrow_position(&market_key, &authority_key);
+            if position.is_none() {
+                anyhow::bail!(
+                    "No borrow position found for authority {:?} in market {:?}",
+                    authority_key,
+                    market_key
+                );
+            }
+            match client
+                .read_client()
+                .get_borrow_position_health(&market_key, &authority_key)
+            {
+                Ok(health) => {
+                    println!("=== Position To Socialize ===");
+                    println!("Position: {:?}", position_key);
+                    println!("LTV: {}", health.ltv);
+                    println!("Borrowed Atoms: {}", health.borrowed_atoms);
+                    println!("Collateral Atoms: {}", health.collateral_atoms);
+                }
+                Err(e) => println!("Could not get borrow position health: {}", e),
+            }
+            println!(
+                "Socializing loss for position {:?} in market {:?}...",
+                position_key, market_key
+            );
+            let events = client.socialize_loss(&market_key, &position_key).await?;
+            println!("Socialize loss successful!");
             println!("Events: {:#?}", events);
         }
     }
