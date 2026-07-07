@@ -8,3 +8,4 @@ authority.key
 user.key
 .DS_Store
 .env
+.claude/settings.local.json

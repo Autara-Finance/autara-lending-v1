@@ -13,6 +13,8 @@ autara-program-lib = { path = "autara-program-lib" }
 autara-oracle = { path = "programs/autara-oracle" }
 
 # Arch dependencies
+# Bumped =0.6.3 -> =0.6.4 to reconcile with CLAMM orca_whirlpools (requires arch_sdk ^0.6.4).
+# Deployed on-chain programs are NOT rebuilt/redeployed here, so their bytecode is unaffected.
 arch_sdk = { version = "=0.6.4" }
 arch_program = { version = "=0.6.4" }
 apl-token = { version = "=0.6.4", features = ["no-entrypoint"] }

@@ -623,14 +623,17 @@ name = "autara-liquidator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "apl-token",
  "arch_sdk",
  "autara-client",
  "autara-lib",
+ "borsh",
  "clap",
  "console-subscriber",
  "hex 0.4.3",
  "itertools",
  "orca_whirlpools",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
