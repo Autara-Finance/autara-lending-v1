@@ -1,5 +1,5 @@
 use arch_program::bitcoin::Network;
-use arch_sdk::{generate_new_keypair, AsyncArchRpcClient, Config};
+use arch_sdk::{generate_new_keypair, with_secret_key_file, AsyncArchRpcClient, Config};
 use autara_pyth::{fetch_and_push_feeds, push_interval_from_env};
 use clap::Parser;
 
@@ -20,6 +20,12 @@ struct Args {
         default_value = DEFAULT_FEEDS
     )]
     feeds: Vec<String>,
+    /// Path to a hex secret-key file for the push signer. When set, the pusher
+    /// uses this (pre-funded) key and skips faucet funding — required on
+    /// mainnet, which has no faucet. When unset, a throwaway key is generated
+    /// and funded via the faucet (testnet/localnet only).
+    #[clap(long)]
+    signer: Option<String>,
     /// Seconds between push iterations. Falls back to the PUSH_INTERVAL_SECS
     /// env var, then to the default 5s.
     #[clap(long)]
@@ -51,12 +57,23 @@ pub async fn main() {
         .init();
     let config = make_config(&args.rpc, args.network);
     let client = AsyncArchRpcClient::new(&config);
-    let (authority_keypair, _, _) = generate_new_keypair(args.network);
-
-    AsyncArchRpcClient::new(&config)
-        .create_and_fund_account_with_faucet(&authority_keypair)
-        .await
-        .unwrap();
+    let authority_keypair = match &args.signer {
+        // Pre-funded signer: mainnet has no faucet, so the key must already hold funds.
+        Some(path) => {
+            with_secret_key_file(path)
+                .unwrap_or_else(|e| panic!("failed to load signer key from {path}: {e}"))
+                .0
+        }
+        // No --signer: generate a throwaway key funded by the faucet (testnet/localnet only).
+        None => {
+            let (keypair, _, _) = generate_new_keypair(args.network);
+            client
+                .create_and_fund_account_with_faucet(&keypair)
+                .await
+                .expect("faucet funding failed (mainnet has no faucet — pass --signer)");
+            keypair
+        }
+    };
 
     let oracle_program_id =
         arch_program::pubkey::Pubkey::from_slice(&hex::decode(&args.program_id).unwrap());

@@ -368,7 +368,13 @@ async fn main() -> Result<(), anyhow::Error> {
             Some(feed_hex.to_string())
         })
         .collect();
-    if !feeds.is_empty() {
+    // When a dedicated `autara-pyth` service pushes prices (the mainnet/testnet
+    // symmetric setup), set DISABLE_PRICE_PUSHER=1 here so the server doesn't
+    // also push the same feeds. Default (unset) keeps the built-in pusher.
+    let disable_price_pusher = std::env::var("DISABLE_PRICE_PUSHER")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !feeds.is_empty() && !disable_price_pusher {
         tracing::info!("Spawning Pyth feed pusher for {} feeds", feeds.len());
         let pusher_client = arch_client.clone();
         let pusher_signer = signer_keypair;
