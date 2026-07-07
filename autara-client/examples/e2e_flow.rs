@@ -264,31 +264,42 @@ async fn main() -> Result<()> {
     println!("user pubkey = {}", hex::encode(user_pk.serialize()));
     println!("user key file = {user_key}");
 
-    rpc.create_and_fund_account_with_faucet(&user_kp).await?;
+    // E2E_SKIP_MINT=1: mainnet mode — the user wallet is PRE-FUNDED with gas and
+    // tokens (no mint authorities exist on mainnet), so skip faucet + minting.
+    let skip_mint = std::env::var("E2E_SKIP_MINT")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if !skip_mint {
+        rpc.create_and_fund_account_with_faucet(&user_kp).await?;
+    }
     let acc = rpc.read_account_info(user_pk).await?;
     println!("user lamports = {}", acc.lamports);
 
-    // mint generously
-    mint_to_user(
-        &rpc,
-        &ausd_auth,
-        &ausd,
-        &user_pk,
-        network,
-        mint_ausd,
-        "mint-aUSD",
-    )
-    .await?;
-    mint_to_user(
-        &rpc,
-        &abtc_auth,
-        &abtc,
-        &user_pk,
-        network,
-        mint_abtc,
-        "mint-aBTC",
-    )
-    .await?;
+    if !skip_mint {
+        // mint generously
+        mint_to_user(
+            &rpc,
+            &ausd_auth,
+            &ausd,
+            &user_pk,
+            network,
+            mint_ausd,
+            "mint-aUSD",
+        )
+        .await?;
+        mint_to_user(
+            &rpc,
+            &abtc_auth,
+            &abtc,
+            &user_pk,
+            network,
+            mint_abtc,
+            "mint-aBTC",
+        )
+        .await?;
+    } else {
+        println!("E2E_SKIP_MINT=1 -> using pre-funded balances (no faucet, no mint)");
+    }
 
     let bals = rpc.get_all_balances(&user_pk).await.unwrap_or_default();
     println!(
@@ -399,8 +410,40 @@ async fn main() -> Result<()> {
         format!("borrowed_atoms={} ltv={ltv:.6}", h3.borrowed_atoms),
     ));
 
-    // Step 4: repay all
+    // Step 4: repay all.
+    //
+    // Repay-all must cover the debt AT EXECUTION TIME, which is the borrowed
+    // amount plus the interest accrued since Step 3. A wallet holding exactly
+    // the borrowed amount therefore fails with an insufficient-balance error
+    // (CI only ever passed thanks to the E2E_MINT_AUSD headroom). Require a
+    // small repay buffer up front so the failure is an actionable funding
+    // message instead of a failed tx deep in the flow.
     println!("\n== STEP 4: repay ALL ==");
+    client.reload_authority_accounts_for_market(&market).await?;
+    let debt = client.get_borrow_position_health(&market)?.borrowed_atoms;
+    let ausd_balance = client
+        .rpc_client()
+        .get_all_balances(&user_pk)
+        .await
+        .unwrap_or_default()
+        .get(&ausd)
+        .copied()
+        .unwrap_or(0);
+    // Same shape as borrow_tol: ~1bp of the debt (plus a floor) comfortably
+    // covers the interest that accrues between this check and the repay tx.
+    let repay_buffer = debt / 10_000 + 10;
+    if ausd_balance < debt + repay_buffer {
+        handle(
+            Err(anyhow!(
+                "repay-all needs a buffer above the current debt for interest accrued \
+                 until the tx lands: balance={ausd_balance} aUSD < debt={debt} + buffer={repay_buffer}. \
+                 Fund the user with at least {} more aUSD atoms and re-run.",
+                debt + repay_buffer - ausd_balance
+            )),
+            &mut results,
+            "repay",
+        )?;
+    }
     let tx4 = submit(
         &client,
         &user_kp,
