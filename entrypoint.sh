@@ -12,15 +12,16 @@ set -e
 # Shared env:
 #   NETWORK            testnet | mainnet            (default: testnet)
 #   ARCH_RPC_URL       Arch JSON-RPC url            (per network; ARCH_NODE also accepted)
-#   ORACLE_PROGRAM_ID  oracle program id (hex)      (per network)
+#   ORACLE_PROGRAM_ID  oracle program id (hex)      (REQUIRED on mainnet)
 #   SIGNER_KEY_B64     base64 of a hex secret-key file for the signer.
 #                        pusher: REQUIRED on mainnet (no faucet); optional on
 #                        testnet (a throwaway faucet-funded key is used if unset).
 # Pusher-only:
 #   FEEDS              comma-separated 0x… Pyth feed ids (default: BTC,USDC)
 # Server-only:
-#   PROGRAM_ID         lending program id (hex; falls back to compiled stage default)
+#   PROGRAM_ID         lending program id (hex; REQUIRED on mainnet)
 #   DISABLE_PRICE_PUSHER=1  hand pushing to a dedicated ROLE=pusher service
+#   PUSHER_PUBKEY      optional hex pubkey for balance metrics
 
 # Decode secrets from environment variables (Railway/CI inject these; never on disk).
 if [ -n "$TOKENS_JSON_B64" ]; then
@@ -53,6 +54,14 @@ ROLE="${ROLE:-server}"
 # ARCH_RPC_URL is the canonical name; keep ARCH_NODE working for existing deploys.
 ARCH_RPC_URL="${ARCH_RPC_URL:-$ARCH_NODE}"
 
+# Mainnet must never silently fall back to compiled stage program/oracle ids.
+if [ "$NETWORK" = "mainnet" ]; then
+  : "${ORACLE_PROGRAM_ID:?ORACLE_PROGRAM_ID required on mainnet (must match deployments/mainnet.json)}"
+  if [ "$ROLE" = "server" ]; then
+    : "${PROGRAM_ID:?PROGRAM_ID required on mainnet for ROLE=server (must match deployments/mainnet.json)}"
+  fi
+fi
+
 case "$ROLE" in
   pusher)
     : "${ARCH_RPC_URL:?ARCH_RPC_URL (or ARCH_NODE) required for ROLE=pusher}"
@@ -79,6 +88,9 @@ case "$ROLE" in
   server)
     # Railway injects PORT; default to 62776.
     LISTEN_ADDR="0.0.0.0:${PORT:-62776}"
+    if [ "${DISABLE_PRICE_PUSHER:-}" = "1" ]; then
+      export DISABLE_PRICE_PUSHER=1
+    fi
     exec autara-server \
       --tokens "${TOKENS_PATH:-/app/tokens.json}" \
       --listen "$LISTEN_ADDR" \

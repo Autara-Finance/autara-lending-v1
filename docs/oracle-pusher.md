@@ -41,6 +41,14 @@ Point a service at this image and set env from the matching file:
   standalone pusher. If the signer runs dry, pushes stop and markets fail with
   `0x1b70`. Any key works (the oracle program only needs a signature) — use a
   dedicated low-value key and alert on its balance.
+- **Re-funding process:** keep a cold/ops wallet funded; when
+  `autara_pusher_balance_lamports` drops below ~24h of fee runway, transfer
+  lamports to the pusher signer pubkey. Record the top-up tx in the ops log.
+  Prefer a recurring calendar check even if alerts are green.
+- **Redundant backup:** run a second pusher only as hot-standby with the same
+  `ORACLE_PROGRAM_ID`/`FEEDS` but a *different* signer key, kept stopped or
+  rate-limited so it does not double-push. Failover = start standby, fund it,
+  stop the primary. Document the DRI who can flip it.
 - **Feeds push atomically.** All feeds go in one transaction; a malformed feed
   drops the whole push. Keep the mainnet feed list to what the markets need.
 - If you also run `ROLE=server` on mainnet, set `DISABLE_PRICE_PUSHER=1` there so
