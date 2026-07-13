@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# set-github-secrets.sh — provision the four Autara deploy keypairs and register
+# set-github-secrets.sh — provision the Autara deploy keypairs and register
 # them as GitHub *Environment* secrets consumed by the Phase 3 CI engine
 # (.github/workflows/_autara-action.yml, which sources
 #  autara-deploy/scripts/ci-load-env.sh).
@@ -13,6 +13,7 @@
 #   ORACLE_KEYPAIR_B64    base64(oracle   keypair file)  -> ORACLE_KEY_PATH
 #   DEPLOYER_KEYPAIR_B64  base64(deployer keypair file)  -> DEPLOYER_KEY_PATH
 #   ADMIN_KEYPAIR_B64     base64(admin    keypair file)  -> ADMIN_KEY_PATH
+#   CURATOR_KEYPAIR_B64   base64(curator  keypair file)  -> CURATOR_KEY_PATH
 #   ARCH_RPC_URL          (optional) plain RPC url string (NOT base64)
 #
 # Keypair files use the arch_sdk `with_secret_key_file` format: a 64-char hex
@@ -41,12 +42,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BIN="$REPO_ROOT/target/debug/autara-deploy"
 
-# The four roles, the keypair file basename for each, and the GitHub secret each
+# The five roles, the keypair file basename for each, and the GitHub secret each
 # one populates. Index-aligned arrays (no associative arrays: macOS ships bash
 # 3.2). The file basenames match what the Phase-2 deploy wrote to .keys-testnet/.
-ROLES=(program oracle deployer admin)
-FILES=(program.json oracle.json deployer.json admin.json)
-SECRETS=(PROGRAM_KEYPAIR_B64 ORACLE_KEYPAIR_B64 DEPLOYER_KEYPAIR_B64 ADMIN_KEYPAIR_B64)
+ROLES=(program oracle deployer admin curator)
+FILES=(program.json oracle.json deployer.json admin.json curator.json)
+SECRETS=(PROGRAM_KEYPAIR_B64 ORACLE_KEYPAIR_B64 DEPLOYER_KEYPAIR_B64 ADMIN_KEYPAIR_B64 CURATOR_KEYPAIR_B64)
 
 usage() {
   cat <<'EOF'
@@ -60,9 +61,11 @@ REQUIRED:
 
 KEY SOURCE (exactly one):
   --from-dir <dir>      Use EXISTING keypair files in <dir> (program.json, oracle.json,
-                        deployer.json, admin.json). Use this for an already-deployed env
-                        so CI manages the current keys (e.g. autara-deploy/.keys-testnet).
-  --generate            Create FOUR brand-new keypairs (compatible format) into a
+                        deployer.json, admin.json, curator.json). If curator.json is
+                        missing, admin.json is used as a legacy fallback (curator==admin).
+                        Use this for an already-deployed env so CI manages the current
+                        keys (e.g. autara-deploy/.keys-testnet).
+  --generate            Create FIVE brand-new keypairs (compatible format) into a
                         gitignored dir, then use those. Use this for a fresh env.
     --out-dir <dir>     Where --generate writes keys (default: autara-deploy/.keys-<env>).
     --force             Allow --generate to overwrite existing key files in the out dir.
@@ -204,26 +207,38 @@ elif [ "$GENERATE" -eq 1 ]; then
       rm -f "$path"
     fi
   done
-  echo "Generating four fresh keypairs into $KEY_DIR/ …" >&2
+  echo "Generating five fresh keypairs into $KEY_DIR/ …" >&2
 else
   for f in "${FILES[@]}"; do
     path="$REPO_ROOT/$KEY_DIR/$f"
+    if [ "$f" = "curator.json" ] && [ ! -f "$path" ]; then
+      # Legacy: curator == admin when no dedicated curator key exists yet.
+      admin_path="$REPO_ROOT/$KEY_DIR/admin.json"
+      [ -f "$admin_path" ] || die "missing keypair file: $KEY_DIR/admin.json (needed as curator fallback)"
+      echo "NOTE: $KEY_DIR/curator.json missing — using admin.json as curator (legacy)." >&2
+      continue
+    fi
     [ -f "$path" ] || die "missing keypair file: $KEY_DIR/$f"
   done
 fi
 
 # ---------------------------------------------------------------------------
-# Derive the four public keys using the crate's own loader. The dry-run
-# preflight prints `program_id:`, `oracle_id:`, `deployer:`, `admin:` lines (all
-# x-only hex pubkeys). We run with a clean env (env -i) and an unreachable RPC so
-# nothing touches a real node and the committed env file cannot leak in. In
-# --generate mode this same call CREATES the missing key files, so it MUST NOT
-# run in the --generate --dry-run simulation (placeholders are shown instead).
+# Derive the public keys using the crate's own loader. The dry-run preflight
+# prints `program_id:`, `oracle_id:`, `deployer:`, `admin:`, `curator:` lines
+# (all x-only hex pubkeys). We run with a clean env (env -i) and an unreachable
+# RPC so nothing touches a real node and the committed env file cannot leak in.
+# In --generate mode this same call CREATES the missing key files, so it MUST
+# NOT run in the --generate --dry-run simulation (placeholders are shown instead).
 # ---------------------------------------------------------------------------
 if [ "$SIMULATE_GENERATE" -eq 1 ]; then
   PUB_program="(not derived in --generate dry-run)"
-  PUBS=("$PUB_program" "$PUB_program" "$PUB_program" "$PUB_program")
+  PUBS=("$PUB_program" "$PUB_program" "$PUB_program" "$PUB_program" "$PUB_program")
 else
+  # Resolve curator path (dedicated file, else admin fallback).
+  CURATOR_FILE="$KEY_DIR/curator.json"
+  if [ ! -f "$REPO_ROOT/$CURATOR_FILE" ]; then
+    CURATOR_FILE="$KEY_DIR/admin.json"
+  fi
   derive_out="$(
     cd "$REPO_ROOT" && env -i HOME="$HOME" PATH="$PATH" \
       NETWORK=localnet ARCH_RPC_URL=http://127.0.0.1:1 \
@@ -231,6 +246,7 @@ else
       ORACLE_KEY_PATH="$KEY_DIR/oracle.json" \
       DEPLOYER_KEY_PATH="$KEY_DIR/deployer.json" \
       ADMIN_KEY_PATH="$KEY_DIR/admin.json" \
+      CURATOR_KEY_PATH="$CURATOR_FILE" \
       "$BIN" --dry-run 2>/dev/null || true
   )"
 
@@ -240,8 +256,9 @@ else
   PUB_oracle="$(declare_pub 'oracle_id:')"
   PUB_deployer="$(declare_pub 'deployer:')"
   PUB_admin="$(declare_pub 'admin:')"
+  PUB_curator="$(declare_pub 'curator:')"
 
-  PUBS=("$PUB_program" "$PUB_oracle" "$PUB_deployer" "$PUB_admin")
+  PUBS=("$PUB_program" "$PUB_oracle" "$PUB_deployer" "$PUB_admin" "$PUB_curator")
   for i in "${!ROLES[@]}"; do
     if ! printf '%s' "${PUBS[$i]}" | grep -qE '^[0-9a-f]{64}$'; then
       die "could not derive a valid pubkey for ${ROLES[$i]} from $KEY_DIR/${FILES[$i]}"
@@ -305,7 +322,11 @@ fi
 
 echo "Applying secrets to environment '$ENV_NAME' on $REPO …"
 for i in "${!ROLES[@]}"; do
-  b64="$(base64 < "$REPO_ROOT/$KEY_DIR/${FILES[$i]}" | tr -d '\n')"
+  key_file="$REPO_ROOT/$KEY_DIR/${FILES[$i]}"
+  if [ "${FILES[$i]}" = "curator.json" ] && [ ! -f "$key_file" ]; then
+    key_file="$REPO_ROOT/$KEY_DIR/admin.json"
+  fi
+  b64="$(base64 < "$key_file" | tr -d '\n')"
   printf '%s' "$b64" | gh secret set "${SECRETS[$i]}" --env "$ENV_NAME" --repo "$REPO"
   unset b64
   echo "  set ${SECRETS[$i]} (${ROLES[$i]})"

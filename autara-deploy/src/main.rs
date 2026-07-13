@@ -310,6 +310,11 @@ fn main() -> Result<()> {
     let (oracle_kp, oracle_pubkey) = load_keypair(&cfg.oracle_key_path)?;
     let (deployer_kp, deployer_pubkey) = load_keypair(&cfg.deployer_key_path)?;
     let (admin_kp, admin_default_pubkey) = load_keypair(&cfg.admin_key_path)?;
+    // Dedicated curator key when set; otherwise curator == admin (legacy).
+    let (curator_kp, curator_pubkey) = match &cfg.curator_key_path {
+        Some(path) => load_keypair(path)?,
+        None => (admin_kp, admin_default_pubkey),
+    };
 
     let admin = cfg.admin.unwrap_or(admin_default_pubkey);
     let fee_receiver = cfg.fee_receiver.unwrap_or(admin);
@@ -330,9 +335,15 @@ fn main() -> Result<()> {
     let step_mint_initial_supply = env_flag("STEP_MINT_INITIAL_SUPPLY", false);
     let step_create_market = env_flag("STEP_CREATE_MARKET", true);
 
-    // Markets are curated by the admin keypair (the signer we hold), so the
-    // curator == the global-config payer/signer (`ctx.payer_pubkey()`).
-    let curator = admin_default_pubkey;
+    // Markets are curated by a dedicated key when CURATOR_KEY_PATH is set.
+    let curator = curator_pubkey;
+    // create_market requires the curator to sign; pass as extra signer when it
+    // is not the same key as the admin payer.
+    let curator_extra_signer = if curator_pubkey != admin_default_pubkey {
+        Some(curator_kp)
+    } else {
+        None
+    };
     let market_pairs = cfg.effective_market_pairs();
 
     // ----- Preflight -----
@@ -342,6 +353,7 @@ fn main() -> Result<()> {
     println!("oracle_id:         {oracle_pubkey}");
     println!("deployer:          {deployer_pubkey}");
     println!("admin:             {admin}");
+    println!("curator:           {curator}");
     println!("fee_receiver:      {fee_receiver}");
     println!("protocol_fee_bps:  {}", cfg.protocol_fee_share_bps);
 
@@ -707,6 +719,7 @@ fn main() -> Result<()> {
                 program_pubkey,
                 oracle_pubkey,
                 curator,
+                curator_extra_signer,
                 pair,
                 supply,
                 collateral,

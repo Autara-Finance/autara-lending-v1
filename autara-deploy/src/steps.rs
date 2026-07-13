@@ -4,6 +4,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use apl_token::state::{Account as TokenAccount, Mint};
+use arch_program::bitcoin::key::Keypair;
 use arch_program::program_option::COption;
 use arch_program::program_pack::Pack;
 use arch_program::pubkey::Pubkey;
@@ -233,10 +234,12 @@ pub fn derive_market_pda(
     .0
 }
 
-/// Create a lending market for one supply/collateral pair (curator = admin).
+/// Create a lending market for one supply/collateral pair.
 ///
-/// Idempotent: if the market PDA already exists it is recorded with
-/// `created=false` and no transaction is sent. Reuses
+/// `curator` owns the market on-chain and must sign. When the curator keypair
+/// differs from the admin payer, pass it as `curator_signer` so it is included
+/// as an extra signer. Idempotent: if the market PDA already exists it is
+/// recorded with `created=false` and no transaction is sent. Reuses
 /// `autara_lib::ixs::create_market_ix` so the on-chain layout cannot drift.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_market(
@@ -244,6 +247,7 @@ pub async fn create_market(
     autara_program_id: Pubkey,
     oracle_program_id: Pubkey,
     curator: Pubkey,
+    curator_signer: Option<Keypair>,
     pair: &MarketPair,
     supply: &TokenConfig,
     collateral: &TokenConfig,
@@ -298,7 +302,12 @@ pub async fn create_market(
     );
     debug_assert_eq!(derived, market_pda);
 
-    let txid = ctx.send(vec![ix], vec![]).await?;
+    let txid = ctx
+        .send(
+            vec![ix],
+            curator_signer.into_iter().collect(),
+        )
+        .await?;
     artifact.record_tx(&label, txid);
     artifact.record_market(MarketRecord {
         supply_label: pair.supply_label.clone(),

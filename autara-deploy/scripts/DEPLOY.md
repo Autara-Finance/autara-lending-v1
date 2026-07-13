@@ -42,9 +42,9 @@ DRY_RUN=1 cargo run -p autara-deploy
    (idempotent; fails loudly if a mint is missing — create mints out-of-band via
    `autara-cli token setup`, this tool holds no mint authority).
 5. **create_market** — creates one lending market per `MARKET_PAIRS` entry
-   (curator = admin; idempotent). The economic parameters mirror
-   `autara-server`'s defaults but are env-configurable — see
-   [Market economic parameters](#market-economic-parameters).
+   (curator from `CURATOR_KEY_PATH`, falling back to admin; idempotent). The
+   economic parameters mirror `autara-server`'s defaults but are env-configurable
+   — see [Market economic parameters](#market-economic-parameters).
 6. **Artifact** — writes `deployments/<network>.json` (addresses + tx ids only),
    including the created/ensured markets.
 

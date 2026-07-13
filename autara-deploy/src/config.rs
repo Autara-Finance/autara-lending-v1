@@ -200,6 +200,10 @@ pub struct DeployConfig {
     pub deployer_key_path: String,
     /// Global-config admin: also the payer/signer for `create_global_config`.
     pub admin_key_path: String,
+    /// Market curator keypair. When unset, falls back to `admin_key_path`
+    /// (legacy: curator == admin). Prefer a dedicated key for mainnet so
+    /// market ownership is separate from protocol admin.
+    pub curator_key_path: Option<String>,
 
     // Compiled program ELFs produced by `cargo-build-sbf --features entrypoint`.
     pub program_elf_path: String,
@@ -417,6 +421,7 @@ impl DeployConfig {
             oracle_key_path: env_or("ORACLE_KEY_PATH", "keys/autara-pyth-stage.key"),
             deployer_key_path: env_or("DEPLOYER_KEY_PATH", "keys/autara-deployer.key"),
             admin_key_path: env_or("ADMIN_KEY_PATH", "keys/autara-admin-stage.key"),
+            curator_key_path: env_opt("CURATOR_KEY_PATH"),
 
             program_elf_path: env_or("PROGRAM_ELF_PATH", "target/deploy/autara_program.so"),
             oracle_elf_path: env_or("ORACLE_ELF_PATH", "target/deploy/autara_oracle.so"),
@@ -626,6 +631,7 @@ mod tests {
             oracle_key_path: "k".to_string(),
             deployer_key_path: "k".to_string(),
             admin_key_path: "k".to_string(),
+            curator_key_path: None,
             program_elf_path: "p".to_string(),
             oracle_elf_path: "o".to_string(),
             admin: None,
