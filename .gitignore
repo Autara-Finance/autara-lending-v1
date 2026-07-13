@@ -13,3 +13,7 @@ user.key
 .keys-testnet/
 .keys-mainnet/
 .keys-*/
+
+# Local-only ops notes (not for the public repo)
+docs/PROCEDURES_DEEPANSHU.md
+.local-docs/
