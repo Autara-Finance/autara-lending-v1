@@ -1,0 +1,22 @@
+[package]
+name = "autara-liquidator"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "autara-liquidator"
+path = "src/main.rs"
+
+[dependencies]
+autara-client = { workspace = true }
+autara-lib = { workspace = true, features = ["client"] }
+arch_sdk = { workspace = true }
+apl-token = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
