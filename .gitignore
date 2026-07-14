@@ -9,3 +9,5 @@ user.key
 .DS_Store
 .env
 .claude/settings.local.json
+.keys-*/
+.claude
