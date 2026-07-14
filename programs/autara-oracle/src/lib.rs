@@ -1,6 +1,10 @@
 use arch_program::{
-    account::AccountInfo, program::invoke_signed_unchecked, program_error::ProgramError,
-    pubkey::Pubkey, rent::minimum_rent, system_instruction,
+    account::AccountInfo,
+    program::{invoke_signed_unchecked, invoke_unchecked},
+    program_error::ProgramError,
+    pubkey::Pubkey,
+    rent::minimum_rent,
+    system_instruction,
 };
 use autara_lib::oracle::pyth::{PythPrice, PythPriceAccount};
 
@@ -37,13 +41,33 @@ pub fn process_instruction<'a>(
             &[&[&pyth_data.id, &[bump]]],
         )?;
     }
+
+    // Feeds created before the trailing `authority` field are exactly one
+    // `PythPrice`. Grow them in place on the next push — the on-chain lending
+    // loader is strict about the new size, so a legacy feed makes every
+    // lend/borrow against its markets fail with InvalidPythOracleAccount even
+    // while the feed itself updates fine. Migration re-binds the authority to
+    // this push's signer, the same trust model as creation.
+    let legacy = !not_initialized && oracle.data_len() == std::mem::size_of::<PythPrice>();
+    if legacy {
+        let required = minimum_rent(std::mem::size_of::<PythPriceAccount>());
+        let missing = required.saturating_sub(oracle.lamports());
+        if missing > 0 {
+            invoke_unchecked(
+                &system_instruction::transfer(signer.key, oracle.key, missing),
+                accounts,
+            )?;
+        }
+        oracle.realloc(std::mem::size_of::<PythPriceAccount>(), true)?;
+    }
+
     let mut oracle_bytes_mut = oracle.try_borrow_mut_data()?;
     let oracle_data: &mut PythPriceAccount = bytemuck::from_bytes_mut(&mut oracle_bytes_mut);
     apply_price_update(
         oracle_data,
         signer.key,
         pyth_data,
-        not_initialized,
+        not_initialized || legacy,
         clock().unix_timestamp,
     )
 }
@@ -113,6 +137,33 @@ mod tests {
         assert_eq!(account.authority, CREATOR);
         assert_eq!(account.pyth_price.price.price, 200);
         assert_eq!(account.pyth_price.price.publish_time, 2000);
+    }
+
+    /// A legacy (pre-authority) feed arrives at `apply_price_update` freshly
+    /// realloc'd with a zeroed authority. The migrating push runs with
+    /// `just_created = true`, so the signer is bound as authority — creation
+    /// semantics, not an IncorrectAuthority rejection against Pubkey::zeroed.
+    #[test]
+    fn migrated_legacy_feed_rebinds_authority() {
+        let mut account = PythPriceAccount::zeroed(); // post-realloc state
+        apply_price_update(&mut account, &CREATOR, &price([7u8; 32], 100), true, 1000).unwrap();
+        assert_eq!(account.authority, CREATOR);
+        assert_eq!(account.pyth_price.price.price, 100);
+        // From then on it behaves like any owned feed.
+        let err = apply_price_update(&mut account, &INTRUDER, &price([7u8; 32], 1), false, 2000)
+            .unwrap_err();
+        assert_eq!(err, ProgramError::IncorrectAuthority);
+    }
+
+    /// Why the migration MUST pass `just_created = true`: without it, the
+    /// zeroed authority on a freshly-grown legacy account matches nobody and
+    /// the feed would brick — every push rejected forever.
+    #[test]
+    fn migrated_feed_without_creation_semantics_would_brick() {
+        let mut account = PythPriceAccount::zeroed();
+        let err = apply_price_update(&mut account, &CREATOR, &price([7u8; 32], 100), false, 1000)
+            .unwrap_err();
+        assert_eq!(err, ProgramError::IncorrectAuthority);
     }
 
     #[test]
