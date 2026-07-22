@@ -12,6 +12,9 @@ pub struct OpsMetrics {
     market_fee_bps: IntGaugeVec,
     market_max_utilisation: GaugeVec,
     pusher_balance_lamports: IntGaugeVec,
+    oracle_publish_time_age_seconds: GaugeVec,
+    vault_reconciliation_delta_atoms: GaugeVec,
+    vault_reconciliation_success: IntGaugeVec,
 }
 
 impl OpsMetrics {
@@ -71,6 +74,24 @@ impl OpsMetrics {
                 &["pusher_pubkey"]
             )
             .unwrap(),
+            oracle_publish_time_age_seconds: prometheus::register_gauge_vec!(
+                "autara_oracle_publish_time_age_seconds",
+                "Age of the latest on-chain oracle publish timestamp",
+                &["market_address", "side"]
+            )
+            .unwrap(),
+            vault_reconciliation_delta_atoms: prometheus::register_gauge_vec!(
+                "autara_vault_reconciliation_delta_atoms",
+                "On-chain token vault balance minus protocol accounting, in token atoms",
+                &["market_address", "vault_type"]
+            )
+            .unwrap(),
+            vault_reconciliation_success: prometheus::register_int_gauge_vec!(
+                "autara_vault_reconciliation_success",
+                "1 if the on-chain vault balance was collected successfully on the last refresh",
+                &["market_address", "vault_type"]
+            )
+            .unwrap(),
         }
     }
 
@@ -122,6 +143,33 @@ impl OpsMetrics {
         self.pusher_balance_lamports
             .with_label_values(&[pubkey])
             .set(lamports);
+    }
+
+    pub fn set_oracle_publish_time_age(&self, market: &str, side: &str, age_seconds: i64) {
+        self.oracle_publish_time_age_seconds
+            .with_label_values(&[market, side])
+            .set(age_seconds.max(0) as f64);
+    }
+
+    pub fn set_vault_reconciliation(
+        &self,
+        market: &str,
+        vault_type: &str,
+        actual_atoms: u64,
+        accounted_atoms: u64,
+    ) {
+        self.vault_reconciliation_delta_atoms
+            .with_label_values(&[market, vault_type])
+            .set(actual_atoms as f64 - accounted_atoms as f64);
+        self.vault_reconciliation_success
+            .with_label_values(&[market, vault_type])
+            .set(1);
+    }
+
+    pub fn set_vault_reconciliation_failed(&self, market: &str, vault_type: &str) {
+        self.vault_reconciliation_success
+            .with_label_values(&[market, vault_type])
+            .set(0);
     }
 }
 

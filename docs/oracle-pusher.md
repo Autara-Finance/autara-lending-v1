@@ -55,6 +55,40 @@ Point a service at this image and set env from the matching file:
   it doesn't double-push (and note the server auto-creates markets under its own
   signer — keep that off mainnet unless that's intended).
 
+## Keep Railway from stopping
+
+The dedicated pusher is a long-running loop. It dies in practice when:
+
+1. **No stable `SIGNER_KEY_B64`** — throwaway faucet keys get `IncorrectAuthority`
+   after migrate/restarts.
+2. **Signer runs dry** — pushes stop; markets fail with `OracleRateTooOld`.
+3. **Busy-loop on fetch errors** (fixed) — CPU spin can get the container killed.
+4. **No healthcheck** — Railway cannot restart a silent dead loop.
+
+Hardening in this image:
+
+- Container **requires** `SIGNER_KEY_B64`.
+- Pusher exposes **`/health`** and **`/metrics`** on `PORT` (default 9090).
+- `/health` is `200` only if a push succeeded within ~90s.
+- Metrics: `autara_pusher_pushes_succeeded_total`,
+  `autara_pusher_pushes_failed_total`, `autara_pusher_fetch_failures_total`,
+  `autara_pusher_consecutive_failures`, `autara_pusher_last_success_unixtime`,
+  `autara_pusher_signer_balance_lamports`.
+
+Railway service settings (testnet + mainnet pusher):
+
+| Setting | Value |
+|---------|--------|
+| Restart policy | Always / on failure |
+| Healthcheck path | `/health` |
+| Healthcheck timeout | ≥ 30s (allow first push) |
+| Public networking | off (private scrape only) |
+| Env | from `autara.pusher.{testnet,mainnet}.env` + `SIGNER_KEY_B64` |
+
+After deploy: `curl -fsS http://<private-host>/health` and scrape `/metrics`.
+Alert rules live in `prometheus-alerts.yml` (`AutaraPusherNotPushing`,
+`AutaraPusherConsecutiveFailures`, `AutaraPusherOutOfFunds`).
+
 ## Sanity check
 
 A market recovers within one push cycle (~5s) once any write lands on its

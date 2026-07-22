@@ -72,16 +72,21 @@ case "$ROLE" in
     FEEDS="${FEEDS:-0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43,0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a}"
     SIGNER_ARG=""
     [ -f /app/keys/signer.key ] && SIGNER_ARG="--signer /app/keys/signer.key"
-    if [ "$PUSH_NETWORK" = "bitcoin" ] && [ -z "$SIGNER_ARG" ]; then
-      echo "ROLE=pusher on mainnet requires SIGNER_KEY_B64 (no faucet)" >&2
+    # Stable signer is required in the container: throwaway faucet keys strand
+    # feed authority after the first bind and make Railway restarts unsafe.
+    if [ -z "$SIGNER_ARG" ]; then
+      echo "ROLE=pusher requires SIGNER_KEY_B64 (stable signer; do not use throwaway faucet keys)" >&2
       exit 1
     fi
-    echo "Starting oracle pusher: network=$PUSH_NETWORK oracle=$ORACLE_PROGRAM_ID"
+    # Railway injects PORT — bind /health + /metrics there for healthchecks.
+    METRICS_LISTEN="0.0.0.0:${PORT:-9090}"
+    echo "Starting oracle pusher: network=$PUSH_NETWORK oracle=$ORACLE_PROGRAM_ID metrics=$METRICS_LISTEN"
     exec autara-pyth \
       --network "$PUSH_NETWORK" \
       --rpc "$ARCH_RPC_URL" \
       --program-id "$ORACLE_PROGRAM_ID" \
       --feeds "$FEEDS" \
+      --metrics-listen "$METRICS_LISTEN" \
       $SIGNER_ARG
     ;;
 
