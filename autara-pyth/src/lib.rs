@@ -1,5 +1,9 @@
 // Testnet price pusher: fetches Pyth prices or falls back to DIA if hermes is down, and writes oracle accounts.
 
+mod metrics;
+
+pub use metrics::{start_metrics_server, PusherMetrics, HEALTH_MAX_STALE_SECS};
+
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
@@ -19,6 +23,8 @@ pub const ETH_FEED: &str = "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d6654
 const ORACLE_PUSH_TIMEOUT: Duration = Duration::from_secs(20);
 const DIA_FALLBACK_EXPO: i32 = -8;
 pub const DEFAULT_PUSH_INTERVAL_SECS: u64 = 5;
+/// Below this balance on testnet/localnet, request a faucet airdrop before pushing.
+const TESTNET_REFILL_THRESHOLD_LAMPORTS: u64 = 100_000;
 
 /// Push-loop interval: the `PUSH_INTERVAL_SECS` env var if set (and a valid
 /// u64), otherwise the default 5s that has always been used.
@@ -37,72 +43,154 @@ pub async fn fetch_and_push_feeds(
     feeds: &[impl AsRef<str>],
     bitcoin_network: Network,
     push_interval: Duration,
+    metrics: Option<PusherMetrics>,
 ) {
     let signer_pubkey = Pubkey::from_slice(&signer.x_only_public_key().0.serialize());
     // Push immediately on start so a restart recovers stale feeds without
     // waiting a full interval (markets fail at max_age=60s).
     loop {
-        let price_result = match fetch_pyth_price(feeds).await {
-            Ok(ok) => ok,
-            Err(err) => {
-                tracing::error!("Failed to fetch Pyth price: {}", err);
-                tracing::warn!("Falling back to DIA REST oracle prices");
-                match fetch_dia_prices(feeds).await {
-                    Ok(ok) => ok,
-                    Err(dia_err) => {
-                        tracing::error!("Failed to fetch DIA fallback price: {}", dia_err);
-                        continue;
-                    }
-                }
-            }
-        };
-        let ixs = match price_result
-            .parsed
-            .into_iter()
-            .map(|data| {
-                tracing::info!(
-                    "{} price = {}, ema = {}",
-                    data.id,
-                    data.price.as_float(),
-                    data.ema_price.as_float()
-                );
-                let oracle_account: PythPrice = data.try_into()?;
-                let pyth_account = get_pyth_account(autara_oracle_program_id, oracle_account.id);
-                Ok(Instruction {
-                    program_id: *autara_oracle_program_id,
-                    accounts: vec![
-                        AccountMeta::new(signer_pubkey, true),
-                        AccountMeta::new(pyth_account, false),
-                        AccountMeta::new_readonly(
-                            arch_sdk::arch_program::system_program::SYSTEM_PROGRAM_ID,
-                            false,
-                        ),
-                    ],
-                    data: bytemuck::bytes_of(&oracle_account).to_vec(),
-                })
-            })
-            .collect::<Result<Vec<_>, anyhow::Error>>()
-        {
-            Ok(ixs) => ixs,
-            Err(err) => {
-                tracing::error!("Failed to convert Pyth price data: {}", err);
-                continue;
-            }
-        };
-        match tokio::time::timeout(
-            ORACLE_PUSH_TIMEOUT,
-            build_and_send_tx(client, &signer_pubkey, signer, &ixs, bitcoin_network),
+        refresh_signer_balance(client, &signer_pubkey, bitcoin_network, metrics.as_ref()).await;
+        match push_once(
+            client,
+            autara_oracle_program_id,
+            signer,
+            &signer_pubkey,
+            feeds,
+            bitcoin_network,
         )
         .await
         {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => tracing::error!("Failed to send transaction: {:?}", err),
-            Err(_) => tracing::error!(
+            PushOutcome::Success => {
+                if let Some(m) = &metrics {
+                    m.record_success();
+                }
+            }
+            PushOutcome::FetchFailure => {
+                if let Some(m) = &metrics {
+                    m.record_fetch_failure();
+                }
+            }
+            PushOutcome::PushFailure => {
+                if let Some(m) = &metrics {
+                    m.record_push_failure();
+                }
+            }
+        }
+        // Always sleep — never busy-loop on fetch/convert failures (that can
+        // CPU-spin and get the Railway service killed).
+        tokio::time::sleep(push_interval).await;
+    }
+}
+
+enum PushOutcome {
+    Success,
+    FetchFailure,
+    PushFailure,
+}
+
+async fn push_once(
+    client: &AsyncArchRpcClient,
+    autara_oracle_program_id: &Pubkey,
+    signer: &Keypair,
+    signer_pubkey: &Pubkey,
+    feeds: &[impl AsRef<str>],
+    bitcoin_network: Network,
+) -> PushOutcome {
+    let price_result = match fetch_pyth_price(feeds).await {
+        Ok(ok) => ok,
+        Err(err) => {
+            tracing::error!("Failed to fetch Pyth price: {}", err);
+            tracing::warn!("Falling back to DIA REST oracle prices");
+            match fetch_dia_prices(feeds).await {
+                Ok(ok) => ok,
+                Err(dia_err) => {
+                    tracing::error!("Failed to fetch DIA fallback price: {}", dia_err);
+                    return PushOutcome::FetchFailure;
+                }
+            }
+        }
+    };
+    let ixs = match price_result
+        .parsed
+        .into_iter()
+        .map(|data| {
+            tracing::info!(
+                "{} price = {}, ema = {}",
+                data.id,
+                data.price.as_float(),
+                data.ema_price.as_float()
+            );
+            let oracle_account: PythPrice = data.try_into()?;
+            let pyth_account = get_pyth_account(autara_oracle_program_id, oracle_account.id);
+            Ok(Instruction {
+                program_id: *autara_oracle_program_id,
+                accounts: vec![
+                    AccountMeta::new(*signer_pubkey, true),
+                    AccountMeta::new(pyth_account, false),
+                    AccountMeta::new_readonly(
+                        arch_sdk::arch_program::system_program::SYSTEM_PROGRAM_ID,
+                        false,
+                    ),
+                ],
+                data: bytemuck::bytes_of(&oracle_account).to_vec(),
+            })
+        })
+        .collect::<Result<Vec<_>, anyhow::Error>>()
+    {
+        Ok(ixs) => ixs,
+        Err(err) => {
+            tracing::error!("Failed to convert Pyth price data: {}", err);
+            return PushOutcome::FetchFailure;
+        }
+    };
+    match tokio::time::timeout(
+        ORACLE_PUSH_TIMEOUT,
+        build_and_send_tx(client, signer_pubkey, signer, &ixs, bitcoin_network),
+    )
+    .await
+    {
+        Ok(Ok(())) => PushOutcome::Success,
+        Ok(Err(err)) => {
+            tracing::error!("Failed to send transaction: {:?}", err);
+            PushOutcome::PushFailure
+        }
+        Err(_) => {
+            tracing::error!(
                 "Oracle push timed out after {:?}; continuing",
                 ORACLE_PUSH_TIMEOUT
-            ),
+            );
+            PushOutcome::PushFailure
         }
-        tokio::time::sleep(push_interval).await;
+    }
+}
+
+async fn refresh_signer_balance(
+    client: &AsyncArchRpcClient,
+    signer_pubkey: &Pubkey,
+    bitcoin_network: Network,
+    metrics: Option<&PusherMetrics>,
+) {
+    let lamports = match client.read_account_info(*signer_pubkey).await {
+        Ok(info) => info.lamports,
+        Err(err) => {
+            tracing::warn!("Failed to read pusher signer balance: {err}");
+            return;
+        }
+    };
+    if let Some(metrics) = metrics {
+        metrics.set_signer_balance(lamports);
+    }
+    // Railway testnet deaths were mostly "Insufficient lamports for fees".
+    // Auto-refill from the faucet on non-mainnet when runway is short.
+    if bitcoin_network != Network::Bitcoin && lamports < TESTNET_REFILL_THRESHOLD_LAMPORTS {
+        tracing::warn!(
+            lamports,
+            threshold = TESTNET_REFILL_THRESHOLD_LAMPORTS,
+            "Pusher signer low; requesting testnet faucet airdrop"
+        );
+        if let Err(err) = client.request_airdrop(*signer_pubkey).await {
+            tracing::error!("Faucet airdrop failed: {err}");
+        }
     }
 }
 
