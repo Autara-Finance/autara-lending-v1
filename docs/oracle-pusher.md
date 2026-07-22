@@ -41,11 +41,53 @@ Point a service at this image and set env from the matching file:
   standalone pusher. If the signer runs dry, pushes stop and markets fail with
   `0x1b70`. Any key works (the oracle program only needs a signature) — use a
   dedicated low-value key and alert on its balance.
+- **Re-funding process:** keep a cold/ops wallet funded; when
+  `autara_pusher_balance_lamports` drops below ~24h of fee runway, transfer
+  lamports to the pusher signer pubkey. Record the top-up tx in the ops log.
+  Prefer a recurring calendar check even if alerts are green.
+- **Redundant backup:** run a second pusher only as hot-standby with the same
+  `ORACLE_PROGRAM_ID`/`FEEDS` but a *different* signer key, kept stopped or
+  rate-limited so it does not double-push. Failover = start standby, fund it,
+  stop the primary. Document the DRI who can flip it.
 - **Feeds push atomically.** All feeds go in one transaction; a malformed feed
   drops the whole push. Keep the mainnet feed list to what the markets need.
 - If you also run `ROLE=server` on mainnet, set `DISABLE_PRICE_PUSHER=1` there so
   it doesn't double-push (and note the server auto-creates markets under its own
   signer — keep that off mainnet unless that's intended).
+
+## Keep Railway from stopping
+
+The dedicated pusher is a long-running loop. It dies in practice when:
+
+1. **No stable `SIGNER_KEY_B64`** — throwaway faucet keys get `IncorrectAuthority`
+   after migrate/restarts.
+2. **Signer runs dry** — pushes stop; markets fail with `OracleRateTooOld`.
+3. **Busy-loop on fetch errors** (fixed) — CPU spin can get the container killed.
+4. **No healthcheck** — Railway cannot restart a silent dead loop.
+
+Hardening in this image:
+
+- Container **requires** `SIGNER_KEY_B64`.
+- Pusher exposes **`/health`** and **`/metrics`** on `PORT` (default 9090).
+- `/health` is `200` only if a push succeeded within ~90s.
+- Metrics: `autara_pusher_pushes_succeeded_total`,
+  `autara_pusher_pushes_failed_total`, `autara_pusher_fetch_failures_total`,
+  `autara_pusher_consecutive_failures`, `autara_pusher_last_success_unixtime`,
+  `autara_pusher_signer_balance_lamports`.
+
+Railway service settings (testnet + mainnet pusher):
+
+| Setting | Value |
+|---------|--------|
+| Restart policy | Always / on failure |
+| Healthcheck path | `/health` |
+| Healthcheck timeout | ≥ 30s (allow first push) |
+| Public networking | off (private scrape only) |
+| Env | from `autara.pusher.{testnet,mainnet}.env` + `SIGNER_KEY_B64` |
+
+After deploy: `curl -fsS http://<private-host>/health` and scrape `/metrics`.
+Alert rules live in `prometheus-alerts.yml` (`AutaraPusherNotPushing`,
+`AutaraPusherConsecutiveFailures`, `AutaraPusherOutOfFunds`).
 
 ## Sanity check
 
@@ -53,3 +95,88 @@ A market recovers within one push cycle (~5s) once any write lands on its
 oracle PDA. If it stays stale: confirm `ORACLE_PROGRAM_ID` matches the program
 the markets were created against, and that pushes reach `Status::Processed`
 (the signer is funded), not just log `Sending`.
+
+## Testnet repair: `InvalidPythOracleAccount` / `0x1b69`
+
+Live stage markets (`program 53def2dc…`, `oracle eee682c2…`) still have
+**120-byte** pre-authority feed PDAs. The lending program expects
+`PythPriceAccount` (**152 bytes**). Symptom: `SupplyApl` fails at
+`autara-lib/src/oracle/pyth.rs:48` with `LendingError(InvalidPythOracleAccount)`.
+
+Confirm layout:
+
+```bash
+cargo run -p autara-pyth --example check_feed_layout
+```
+
+Legacy lines look like `data_len=120 layout=LEGACY(PythPrice)`.
+
+Repair (in order):
+
+1. **Pin a stable pusher signer** on the testnet Railway pusher
+   (`SIGNER_KEY_B64`). The first successful post-upgrade push binds feed
+   `authority` to that key — a throwaway faucet key will strand the feeds.
+
+   ```bash
+   # generate + faucet-fund; copy SIGNER_KEY_B64 to clipboard (secret not printed)
+   ./autara-deploy/scripts/provision-pusher-signer.sh --network testnet --fund --copy
+   ```
+
+   Paste the clipboard into the Railway testnet pusher's `SIGNER_KEY_B64`, set
+   `PUSHER_PUBKEY` from the script's printed arch pubkey (optional, for server
+   balance metrics), and redeploy/restart the pusher.
+2. **Upgrade only the oracle ELF** at `eee682c2…` (note: `autara-upgrade.yml`
+   deliberately does **not** touch the oracle — that is how lending got ahead
+   of the feeds). From a commit that includes legacy→152-byte realloc on push:
+
+   ```bash
+   # build ELF
+   ( cd programs/autara-oracle && cargo-build-sbf --features entrypoint )
+
+   # MUST source the testnet env (otherwise defaults to localnet).
+   # re-upload oracle only against the live stage keys
+   set -a; source autara-deploy/scripts/autara.testnet.env; set +a
+   STEP_DEPLOY_PROGRAM=false STEP_DEPLOY_ORACLE=true \
+   STEP_INIT_CONFIG=false STEP_TOKEN_SETUP=false STEP_CREATE_MARKET=false \
+   DRY_RUN=1 cargo run -p autara-deploy   # preview first
+   # then the same with DRY_RUN=0 for the real upload
+   ```
+
+3. Restart / let the pusher run one cycle. Feeds should become
+   `data_len=152 layout=NEW(PythPriceAccount)`.
+4. Re-run `check_feed_layout`, then retry Supply on
+   `arch-swap-nine.vercel.app`.
+
+Do **not** fix this by relaxing the on-chain lending loader: that would accept
+unowned legacy feeds forever. Mainnet feeds are created at the new size and do
+not need this path.
+
+## Testnet repair: `OracleRateTooOld` / `0x1b70`
+
+If Supply/Borrow fails with `LendingError(OracleRateTooOld)` after feeds are
+already `NEW` layout, the pusher has stopped writing (max age is 60s). Check:
+
+```bash
+cargo run -p autara-pyth --example check_feed_age
+```
+
+`age_secs` must stay under ~60. If it is large:
+
+1. Confirm the Railway **testnet** pusher is up and logging successful sends
+   (not only `Sending` — watch for continuous cycles every ~5s).
+2. Confirm `SIGNER_KEY_B64` is still the key that owns feed `authority`
+   (printed by `check_feed_age`). A throwaway signer gets `IncorrectAuthority`.
+3. Refill the signer from the faucet if lamports are low:
+   `cargo run -p autara-client --example fund_signer -- --key autara-deploy/.keys-testnet/pusher.key --rpc https://rpc.testnet.arch.network --network testnet`
+4. Emergency local refresh (same stable key):
+
+   ```bash
+   cargo run -p autara-pyth -- \
+     --rpc https://rpc.testnet.arch.network --network testnet \
+     --program-id eee682c27db375bebbc17ed9a76aaa935c8b72bc7de50d736f03e2dfbed84b15 \
+     --signer autara-deploy/.keys-testnet/pusher.key \
+     --push-interval-secs 5
+   ```
+
+This is **not** an arch-swap frontend bug — the lending program rejects stale
+oracles regardless of the UI.

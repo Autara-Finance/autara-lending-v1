@@ -12,15 +12,16 @@ set -e
 # Shared env:
 #   NETWORK            testnet | mainnet            (default: testnet)
 #   ARCH_RPC_URL       Arch JSON-RPC url            (per network; ARCH_NODE also accepted)
-#   ORACLE_PROGRAM_ID  oracle program id (hex)      (per network)
+#   ORACLE_PROGRAM_ID  oracle program id (hex)      (REQUIRED on mainnet)
 #   SIGNER_KEY_B64     base64 of a hex secret-key file for the signer.
 #                        pusher: REQUIRED on mainnet (no faucet); optional on
 #                        testnet (a throwaway faucet-funded key is used if unset).
 # Pusher-only:
 #   FEEDS              comma-separated 0x… Pyth feed ids (default: BTC,USDC)
 # Server-only:
-#   PROGRAM_ID         lending program id (hex; falls back to compiled stage default)
+#   PROGRAM_ID         lending program id (hex; REQUIRED on mainnet)
 #   DISABLE_PRICE_PUSHER=1  hand pushing to a dedicated ROLE=pusher service
+#   PUSHER_PUBKEY      optional hex pubkey for balance metrics
 
 # Decode secrets from environment variables (Railway/CI inject these; never on disk).
 if [ -n "$TOKENS_JSON_B64" ]; then
@@ -53,6 +54,14 @@ ROLE="${ROLE:-server}"
 # ARCH_RPC_URL is the canonical name; keep ARCH_NODE working for existing deploys.
 ARCH_RPC_URL="${ARCH_RPC_URL:-$ARCH_NODE}"
 
+# Mainnet must never silently fall back to compiled stage program/oracle ids.
+if [ "$NETWORK" = "mainnet" ]; then
+  : "${ORACLE_PROGRAM_ID:?ORACLE_PROGRAM_ID required on mainnet (must match deployments/mainnet.json)}"
+  if [ "$ROLE" = "server" ]; then
+    : "${PROGRAM_ID:?PROGRAM_ID required on mainnet for ROLE=server (must match deployments/mainnet.json)}"
+  fi
+fi
+
 case "$ROLE" in
   pusher)
     : "${ARCH_RPC_URL:?ARCH_RPC_URL (or ARCH_NODE) required for ROLE=pusher}"
@@ -63,22 +72,30 @@ case "$ROLE" in
     FEEDS="${FEEDS:-0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43,0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a}"
     SIGNER_ARG=""
     [ -f /app/keys/signer.key ] && SIGNER_ARG="--signer /app/keys/signer.key"
-    if [ "$PUSH_NETWORK" = "bitcoin" ] && [ -z "$SIGNER_ARG" ]; then
-      echo "ROLE=pusher on mainnet requires SIGNER_KEY_B64 (no faucet)" >&2
+    # Stable signer is required in the container: throwaway faucet keys strand
+    # feed authority after the first bind and make Railway restarts unsafe.
+    if [ -z "$SIGNER_ARG" ]; then
+      echo "ROLE=pusher requires SIGNER_KEY_B64 (stable signer; do not use throwaway faucet keys)" >&2
       exit 1
     fi
-    echo "Starting oracle pusher: network=$PUSH_NETWORK oracle=$ORACLE_PROGRAM_ID"
+    # Railway injects PORT — bind /health + /metrics there for healthchecks.
+    METRICS_LISTEN="0.0.0.0:${PORT:-9090}"
+    echo "Starting oracle pusher: network=$PUSH_NETWORK oracle=$ORACLE_PROGRAM_ID metrics=$METRICS_LISTEN"
     exec autara-pyth \
       --network "$PUSH_NETWORK" \
       --rpc "$ARCH_RPC_URL" \
       --program-id "$ORACLE_PROGRAM_ID" \
       --feeds "$FEEDS" \
+      --metrics-listen "$METRICS_LISTEN" \
       $SIGNER_ARG
     ;;
 
   server)
     # Railway injects PORT; default to 62776.
     LISTEN_ADDR="0.0.0.0:${PORT:-62776}"
+    if [ "${DISABLE_PRICE_PUSHER:-}" = "1" ]; then
+      export DISABLE_PRICE_PUSHER=1
+    fi
     exec autara-server \
       --tokens "${TOKENS_PATH:-/app/tokens.json}" \
       --listen "$LISTEN_ADDR" \

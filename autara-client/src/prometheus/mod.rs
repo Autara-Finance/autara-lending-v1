@@ -1,6 +1,7 @@
 pub mod autara_indexer;
 pub mod exporter;
 pub mod market_metrics;
+pub mod ops_metrics;
 pub mod position_metrics;
 
 #[derive(Debug, Clone, Copy)]

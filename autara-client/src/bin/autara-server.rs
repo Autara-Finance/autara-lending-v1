@@ -225,6 +225,14 @@ async fn main() -> Result<(), anyhow::Error> {
         bitcoin_node_username: String::new(),
     };
     let arch_client = config.arch_rpc_client();
+    let pusher_pubkey = std::env::var("PUSHER_PUBKEY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| parse_pubkey(&value).context("Invalid PUSHER_PUBKEY"))
+        .transpose()?;
+    if let Some(pusher_pubkey) = pusher_pubkey {
+        tracing::info!(?pusher_pubkey, "Monitoring dedicated pusher signer balance");
+    }
 
     // Fund signer account via faucet (idempotent, needed for tx fees)
     tracing::info!("Funding signer account via faucet...");
@@ -387,6 +395,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 &feeds,
                 network,
                 autara_pyth::push_interval_from_env(),
+                None,
             )
             .await;
         });
@@ -450,7 +459,7 @@ async fn main() -> Result<(), anyhow::Error> {
         )
         .build(args.listen.parse::<SocketAddr>()?)
         .await?;
-    let module = build_autara_server(autara_state.clone(), minters, arch_client).await?;
+    let module = build_autara_server(autara_state.clone(), minters, arch_client.clone()).await?;
     let server_addr = server.local_addr()?;
     let handle = server.start(module);
     tracing::info!("Server running at: {}", server_addr);
@@ -458,7 +467,13 @@ async fn main() -> Result<(), anyhow::Error> {
     // Start Prometheus
     PrometheusExporter::launch(args.prometheus.parse()?, None).await?;
     tracing::info!("Prometheus exporter running at {}", args.prometheus);
-    PrometheusAutaraIndexer::new(autara_state, Duration::from_secs(60)).spawn();
+    PrometheusAutaraIndexer::new(
+        autara_state,
+        arch_client,
+        pusher_pubkey,
+        Duration::from_secs(60),
+    )
+    .spawn();
 
     handle.stopped().await;
     Ok(())

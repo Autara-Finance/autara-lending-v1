@@ -333,6 +333,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "autara-liquidator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "apl-token",
+ "arch_sdk",
+ "autara-client",
+ "autara-lib",
+ "axum",
+ "clap",
+ "hex 0.4.3",
+ "prometheus",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "autara-oracle"
 version = "0.1.0"
 dependencies = [
@@ -377,10 +397,12 @@ dependencies = [
  "arch_sdk",
  "autara-lib",
  "autara-oracle",
+ "axum",
  "borsh",
  "bytemuck",
  "clap",
  "hex 0.4.3",
+ "prometheus",
  "reqwest",
  "serde",
  "serde_json",

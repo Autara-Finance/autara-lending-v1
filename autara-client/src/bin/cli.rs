@@ -1211,6 +1211,7 @@ async fn handle_oracle_command(
                 &feeds,
                 network,
                 push_interval,
+                None,
             )
             .await;
         }

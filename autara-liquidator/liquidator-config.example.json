@@ -1,0 +1,12 @@
+{
+  "rpc_url": "https://rpc.testnet.arch.network",
+  "autara_program_id": "34cf72a92dd76322a42f13f99e51cf7c03221f4adbd4ee7e0c409c4161dfe20c",
+  "liquidator_keypair": "keys/liquidator.key",
+  "network": "testnet",
+  "dry_run": true,
+  "poll_interval_secs": 5,
+  "slippage_bps": 100,
+  "min_lamports": 50000,
+  "max_consecutive_failures": 5,
+  "restrict_tokens": []
+}

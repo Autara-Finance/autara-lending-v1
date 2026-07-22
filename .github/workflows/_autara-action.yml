@@ -124,6 +124,7 @@ jobs:
           ORACLE_KEYPAIR_B64: ${{ secrets.ORACLE_KEYPAIR_B64 }}
           DEPLOYER_KEYPAIR_B64: ${{ secrets.DEPLOYER_KEYPAIR_B64 }}
           ADMIN_KEYPAIR_B64: ${{ secrets.ADMIN_KEYPAIR_B64 }}
+          CURATOR_KEYPAIR_B64: ${{ secrets.CURATOR_KEYPAIR_B64 }}
         run: |
           set -euo pipefail
           umask 077
@@ -138,11 +139,19 @@ jobs:
           printf '%s' "$ORACLE_KEYPAIR_B64"   | base64 -d > "$KEYS/oracle.json"
           printf '%s' "$DEPLOYER_KEYPAIR_B64" | base64 -d > "$KEYS/deployer.json"
           printf '%s' "$ADMIN_KEYPAIR_B64"    | base64 -d > "$KEYS/admin.json"
+          if [ -n "${CURATOR_KEYPAIR_B64:-}" ]; then
+            printf '%s' "$CURATOR_KEYPAIR_B64" | base64 -d > "$KEYS/curator.json"
+          else
+            # Legacy fallback: curator == admin until CURATOR_KEYPAIR_B64 is set.
+            cp "$KEYS/admin.json" "$KEYS/curator.json"
+            echo "::warning::CURATOR_KEYPAIR_B64 unset — using ADMIN as curator (set a dedicated curator secret for mainnet)."
+          fi
           {
             echo "PROGRAM_KEY_PATH=$KEYS/program.json"
             echo "ORACLE_KEY_PATH=$KEYS/oracle.json"
             echo "DEPLOYER_KEY_PATH=$KEYS/deployer.json"
             echo "ADMIN_KEY_PATH=$KEYS/admin.json"
+            echo "CURATOR_KEY_PATH=$KEYS/curator.json"
           } >> "$GITHUB_ENV"
 
       # Build ONCE (pre-sync) only to derive the program keypair's pubkey.

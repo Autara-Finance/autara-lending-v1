@@ -1,5 +1,11 @@
 # Autara Lending - Curator Guide
 
+## Curator identity
+
+Production markets must use a **dedicated curator key** (`CURATOR_KEY_PATH`),
+separate from protocol admin, deployer, and oracle pusher. See
+`docs/CURATOR_IDENTITY.md` for the mainnet pubkey and custody notes.
+
 ## Overview
 
 Autara Lending is a permissionless lending protocol on Arch Network. Each **market** pairs a supply asset (lent by suppliers, borrowed by borrowers) with a collateral asset. As a curator, you manage the risk parameters of your market(s).

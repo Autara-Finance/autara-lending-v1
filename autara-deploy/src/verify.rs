@@ -113,7 +113,14 @@ pub async fn run(
     let (_, admin_default) = load_keypair(&cfg.admin_key_path)
         .with_context(|| format!("loading admin key {}", cfg.admin_key_path))?;
     let admin = cfg.admin.unwrap_or(admin_default);
-    let curator = admin_default;
+    let curator = match &cfg.curator_key_path {
+        Some(path) => {
+            load_keypair(path)
+                .with_context(|| format!("loading curator key {path}"))?
+                .1
+        }
+        None => admin_default,
+    };
 
     println!("network:   {}", cfg.network.as_str());
     println!("rpc_url:   {}", cfg.arch_rpc_url);

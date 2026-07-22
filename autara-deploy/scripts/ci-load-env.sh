@@ -25,6 +25,7 @@ __kp_program="${PROGRAM_KEY_PATH:-}"
 __kp_oracle="${ORACLE_KEY_PATH:-}"
 __kp_deployer="${DEPLOYER_KEY_PATH:-}"
 __kp_admin="${ADMIN_KEY_PATH:-}"
+__kp_curator="${CURATOR_KEY_PATH:-}"
 
 __env_file="autara-deploy/scripts/autara.${NETWORK:?NETWORK must be set}.env"
 if [ ! -f "$__env_file" ]; then
@@ -42,6 +43,12 @@ export PROGRAM_KEY_PATH="$__kp_program"
 export ORACLE_KEY_PATH="$__kp_oracle"
 export DEPLOYER_KEY_PATH="$__kp_deployer"
 export ADMIN_KEY_PATH="$__kp_admin"
+# Fall back to admin when CI did not decode a dedicated curator key.
+if [ -n "$__kp_curator" ]; then
+  export CURATOR_KEY_PATH="$__kp_curator"
+elif [ -z "${CURATOR_KEY_PATH:-}" ]; then
+  export CURATOR_KEY_PATH="$__kp_admin"
+fi
 export NETWORK
 export PROGRAM_ELF_PATH="target/deploy/autara_program.so"
 export ORACLE_ELF_PATH="target/deploy/autara_oracle.so"
