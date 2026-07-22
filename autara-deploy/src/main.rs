@@ -384,9 +384,7 @@ fn main() -> Result<()> {
             );
         }
         if !touches_lending_program {
-            println!(
-                "program_id_guard:  skipped (oracle-only / no lending-program steps enabled)"
-            );
+            println!("program_id_guard:  skipped (oracle-only / no lending-program steps enabled)");
         }
     } else {
         println!("program_id_guard:  ok (matches autara_program::id())");
