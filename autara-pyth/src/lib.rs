@@ -39,8 +39,9 @@ pub async fn fetch_and_push_feeds(
     push_interval: Duration,
 ) {
     let signer_pubkey = Pubkey::from_slice(&signer.x_only_public_key().0.serialize());
+    // Push immediately on start so a restart recovers stale feeds without
+    // waiting a full interval (markets fail at max_age=60s).
     loop {
-        tokio::time::sleep(push_interval).await;
         let price_result = match fetch_pyth_price(feeds).await {
             Ok(ok) => ok,
             Err(err) => {
@@ -101,6 +102,7 @@ pub async fn fetch_and_push_feeds(
                 ORACLE_PUSH_TIMEOUT
             ),
         }
+        tokio::time::sleep(push_interval).await;
     }
 }
 

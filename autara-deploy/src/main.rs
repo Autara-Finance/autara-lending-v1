@@ -56,6 +56,9 @@ enum Command {
     /// global config, mints, markets, and oracle freshness on-chain (and,
     /// optionally, the running server JSON-RPC). Sends NO transaction.
     Verify(VerifyArgs),
+    /// Read-only: compare deployed program bytecode hashes against the hashes
+    /// recorded in a deployment artifact. Sends NO transaction.
+    VerifyBytecode(VerifyBytecodeArgs),
 }
 
 #[derive(Args, Debug)]
@@ -69,6 +72,14 @@ struct VerifyArgs {
     /// the initial-supply minting step was expected to have run).
     #[arg(long, default_value_t = false)]
     expect_supply: bool,
+}
+
+#[derive(Args, Debug)]
+struct VerifyBytecodeArgs {
+    /// Deployment artifact containing program/oracle IDs and their recorded ELF
+    /// SHA-256 hashes. Defaults to OUTPUT_PATH (deployments/<network>.json).
+    #[arg(long)]
+    artifact: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -299,6 +310,11 @@ fn main() -> Result<()> {
                 let cfg = DeployConfig::from_env()?;
                 rt.block_on(verify::run(&cfg, args.server_url, args.expect_supply))
             }
+            Command::VerifyBytecode(args) => {
+                let cfg = DeployConfig::from_env()?;
+                let artifact_path = args.artifact.unwrap_or_else(|| cfg.output_path.clone());
+                rt.block_on(verify::verify_bytecode(&cfg, &artifact_path))
+            }
         };
     }
 
@@ -350,20 +366,26 @@ fn main() -> Result<()> {
     // the runtime program id. The client, however, derives PDAs from the
     // deployed program key. If the two disagree, create_global_config / market
     // instructions target the wrong PDA and fail. Guard it here — fatal on a
-    // real run, a loud warning in dry-run so the preview still completes.
-    // (The oracle is position-independent: it uses the runtime program_id only,
-    // so it needs no such guard.)
+    // real run that touches the lending program; warn-only for oracle-only
+    // uploads (the oracle is position-independent and needs no such guard).
     let compiled_id = autara_program::id();
+    let touches_lending_program =
+        step_deploy_program || step_init_config || step_token_setup || step_create_market;
     if program_pubkey != compiled_id {
         eprintln!("WARNING: program keypair pubkey != compiled autara_program::id()");
         eprintln!("  program keypair      : {program_pubkey}");
         eprintln!("  autara_program::id() : {compiled_id}");
         eprintln!("  Fix: deploy with the keypair whose pubkey == autara_program::id(),");
         eprintln!("       or update id() in programs/autara-program/src/lib.rs and rebuild.");
-        if !dry_run {
+        if !dry_run && touches_lending_program {
             bail!(
                 "program id mismatch: create_global_config/market would target the wrong PDA \
                  (compiled {compiled_id}, deploying {program_pubkey})"
+            );
+        }
+        if !touches_lending_program {
+            println!(
+                "program_id_guard:  skipped (oracle-only / no lending-program steps enabled)"
             );
         }
     } else {
