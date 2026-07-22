@@ -99,12 +99,13 @@ Repair (in order):
    # build ELF
    ( cd programs/autara-oracle && cargo-build-sbf --features entrypoint )
 
+   # MUST source the testnet env (otherwise defaults to localnet).
    # re-upload oracle only against the live stage keys
    set -a; source autara-deploy/scripts/autara.testnet.env; set +a
    STEP_DEPLOY_PROGRAM=false STEP_DEPLOY_ORACLE=true \
    STEP_INIT_CONFIG=false STEP_TOKEN_SETUP=false STEP_CREATE_MARKET=false \
    DRY_RUN=1 cargo run -p autara-deploy   # preview first
-   # then DRY_RUN=0 (or unset) for the real upload
+   # then the same with DRY_RUN=0 for the real upload
    ```
 
 3. Restart / let the pusher run one cycle. Feeds should become
@@ -115,3 +116,33 @@ Repair (in order):
 Do **not** fix this by relaxing the on-chain lending loader: that would accept
 unowned legacy feeds forever. Mainnet feeds are created at the new size and do
 not need this path.
+
+## Testnet repair: `OracleRateTooOld` / `0x1b70`
+
+If Supply/Borrow fails with `LendingError(OracleRateTooOld)` after feeds are
+already `NEW` layout, the pusher has stopped writing (max age is 60s). Check:
+
+```bash
+cargo run -p autara-pyth --example check_feed_age
+```
+
+`age_secs` must stay under ~60. If it is large:
+
+1. Confirm the Railway **testnet** pusher is up and logging successful sends
+   (not only `Sending` — watch for continuous cycles every ~5s).
+2. Confirm `SIGNER_KEY_B64` is still the key that owns feed `authority`
+   (printed by `check_feed_age`). A throwaway signer gets `IncorrectAuthority`.
+3. Refill the signer from the faucet if lamports are low:
+   `cargo run -p autara-client --example fund_signer -- --key autara-deploy/.keys-testnet/pusher.key --rpc https://rpc.testnet.arch.network --network testnet`
+4. Emergency local refresh (same stable key):
+
+   ```bash
+   cargo run -p autara-pyth -- \
+     --rpc https://rpc.testnet.arch.network --network testnet \
+     --program-id eee682c27db375bebbc17ed9a76aaa935c8b72bc7de50d736f03e2dfbed84b15 \
+     --signer autara-deploy/.keys-testnet/pusher.key \
+     --push-interval-secs 5
+   ```
+
+This is **not** an arch-swap frontend bug — the lending program rejects stale
+oracles regardless of the UI.
