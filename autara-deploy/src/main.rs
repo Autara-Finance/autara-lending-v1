@@ -56,9 +56,6 @@ enum Command {
     /// global config, mints, markets, and oracle freshness on-chain (and,
     /// optionally, the running server JSON-RPC). Sends NO transaction.
     Verify(VerifyArgs),
-    /// Read-only: compare deployed program bytecode hashes against the hashes
-    /// recorded in a deployment artifact. Sends NO transaction.
-    VerifyBytecode(VerifyBytecodeArgs),
 }
 
 #[derive(Args, Debug)]
@@ -72,14 +69,6 @@ struct VerifyArgs {
     /// the initial-supply minting step was expected to have run).
     #[arg(long, default_value_t = false)]
     expect_supply: bool,
-}
-
-#[derive(Args, Debug)]
-struct VerifyBytecodeArgs {
-    /// Deployment artifact containing program/oracle IDs and their recorded ELF
-    /// SHA-256 hashes. Defaults to OUTPUT_PATH (deployments/<network>.json).
-    #[arg(long)]
-    artifact: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -309,11 +298,6 @@ fn main() -> Result<()> {
             Command::Verify(args) => {
                 let cfg = DeployConfig::from_env()?;
                 rt.block_on(verify::run(&cfg, args.server_url, args.expect_supply))
-            }
-            Command::VerifyBytecode(args) => {
-                let cfg = DeployConfig::from_env()?;
-                let artifact_path = args.artifact.unwrap_or_else(|| cfg.output_path.clone());
-                rt.block_on(verify::verify_bytecode(&cfg, &artifact_path))
             }
         };
     }
