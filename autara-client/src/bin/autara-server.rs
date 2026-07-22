@@ -387,6 +387,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 &feeds,
                 network,
                 autara_pyth::push_interval_from_env(),
+                None,
             )
             .await;
         });
