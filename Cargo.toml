@@ -14,11 +14,18 @@ autara-oracle = { path = "programs/autara-oracle" }
 
 # Arch dependencies
 # Bumped =0.6.3 -> =0.6.4 to reconcile with CLAMM orca_whirlpools (requires arch_sdk ^0.6.4).
+# Bumped =0.6.4 -> =0.6.7 to reconcile with cosigner-client (crates.io), which pins
+# arch_program/arch_sdk =0.6.7 — anything else yields two distinct ArchMessage types
+# in the dependency graph. CLAMM orca_whirlpools requires ^0.6.4, which 0.6.7 satisfies.
 # Deployed on-chain programs are NOT rebuilt/redeployed here, so their bytecode is unaffected.
-arch_sdk = { version = "=0.6.4" }
-arch_program = { version = "=0.6.4" }
-apl-token = { version = "=0.6.4", features = ["no-entrypoint"] }
-apl-associated-token-account = { version = "=0.6.4", features = ["no-entrypoint"] }
+arch_sdk = { version = "=0.6.7" }
+arch_program = { version = "=0.6.7" }
+apl-token = { version = "=0.6.7", features = ["no-entrypoint"] }
+apl-associated-token-account = { version = "=0.6.7", features = ["no-entrypoint"] }
+
+# Remote co-signer SDK (arch-custody-proxy/crates/cosigner-client, published on crates.io).
+# Pins arch_program/arch_sdk =0.6.7 and bitcoin =0.32.5 — keep the pins above in lockstep.
+cosigner-client = { version = "0.2" }
 
 bitcoincore-rpc-async = { version = "3.0" }
 

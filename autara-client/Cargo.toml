@@ -17,6 +17,7 @@ tokio = { workspace = true }
 hex = { workspace = true }
 bytemuck = { workspace = true }
 clap = { workspace = true }
+cosigner-client = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
