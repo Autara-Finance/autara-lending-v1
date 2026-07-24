@@ -7,14 +7,15 @@ pub use metrics::{start_metrics_server, PusherMetrics, HEALTH_MAX_STALE_SECS};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use arch_program::bitcoin::{key::Keypair, Network};
+use arch_program::bitcoin::Network;
 use arch_sdk::{
     arch_program::{
         account::AccountMeta, instruction::Instruction, pubkey::Pubkey, sanitized::ArchMessage,
     },
-    build_and_sign_transaction, ArchRpcClient, Status,
+    ArchRpcClient, Status,
 };
 use autara_lib::oracle::pyth::PythPrice;
+use cosigner_client::{ArchSigner, ArchSignerT, SignError};
 use serde::{Deserialize, Serialize};
 
 pub const BTC_FEED: &str = "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43";
@@ -36,27 +37,55 @@ pub fn push_interval_from_env() -> Duration {
     Duration::from_secs(secs)
 }
 
+/// Intent label attached to every remote signing request from the pusher.
+/// Audit-only today, enforced by a future validation engine — label honestly.
+pub const PUSH_PRICE_INTENT: &str = "push-price";
+
+/// Resolve the pusher's signer from the environment (`COSIGNER_*` → remote
+/// co-signer proxy, `ARCH_KEY_PATH` → local key file), pinned to `network`
+/// and carrying the pusher's `"push-price"` intent so the pusher binaries
+/// cannot drift on the label.
+pub fn pusher_signer_from_env(network: Network) -> Result<ArchSigner, SignError> {
+    Ok(ArchSigner::from_env()?
+        .with_network(network)
+        .with_intent(PUSH_PRICE_INTENT))
+}
+
+/// True when the environment selects a signer (remote proxy or local key
+/// file); callers with a legacy key-file flow fall back to it otherwise.
+pub fn signer_env_configured() -> bool {
+    let set = |k: &str| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false);
+    set("COSIGNER_URL") || set("ARCH_KEY_PATH")
+}
+
+/// Parse a `"0x…"`-prefixed (or bare) 64-hex-char Pyth feed id.
+pub fn parse_feed_id(feed: &str) -> anyhow::Result<[u8; 32]> {
+    let feed_hex = feed.strip_prefix("0x").unwrap_or(feed);
+    let mut feed_id = [0u8; 32];
+    hex::decode_to_slice(feed_hex, &mut feed_id)
+        .with_context(|| format!("invalid feed id hex: {feed}"))?;
+    Ok(feed_id)
+}
+
 pub async fn fetch_and_push_feeds(
     client: &ArchRpcClient,
     autara_oracle_program_id: &Pubkey,
-    signer: &Keypair,
+    signer: &ArchSigner,
     feeds: &[impl AsRef<str>],
-    bitcoin_network: Network,
     push_interval: Duration,
     metrics: Option<PusherMetrics>,
 ) {
-    let signer_pubkey = Pubkey::from_slice(&signer.x_only_public_key().0.serialize());
+    let signer_pubkey = signer.pubkey();
     // Push immediately on start so a restart recovers stale feeds without
     // waiting a full interval (markets fail at max_age=60s).
     loop {
-        refresh_signer_balance(client, &signer_pubkey, bitcoin_network, metrics.as_ref()).await;
+        refresh_signer_balance(client, &signer_pubkey, signer.network(), metrics.as_ref()).await;
         match push_once(
             client,
             autara_oracle_program_id,
             signer,
             &signer_pubkey,
             feeds,
-            bitcoin_network,
         )
         .await
         {
@@ -91,10 +120,9 @@ enum PushOutcome {
 async fn push_once(
     client: &ArchRpcClient,
     autara_oracle_program_id: &Pubkey,
-    signer: &Keypair,
+    signer: &ArchSigner,
     signer_pubkey: &Pubkey,
     feeds: &[impl AsRef<str>],
-    bitcoin_network: Network,
 ) -> PushOutcome {
     let price_result = match fetch_pyth_price(feeds).await {
         Ok(ok) => ok,
@@ -143,12 +171,7 @@ async fn push_once(
             return PushOutcome::FetchFailure;
         }
     };
-    match tokio::time::timeout(
-        ORACLE_PUSH_TIMEOUT,
-        build_and_send_tx(client, signer_pubkey, signer, &ixs, bitcoin_network),
-    )
-    .await
-    {
+    match tokio::time::timeout(ORACLE_PUSH_TIMEOUT, build_and_send_tx(client, signer, &ixs)).await {
         Ok(Ok(())) => PushOutcome::Success,
         Ok(Err(err)) => {
             tracing::error!("Failed to send transaction: {:?}", err);
@@ -197,17 +220,16 @@ async fn refresh_signer_balance(
 pub struct AutaraPythPusherClient {
     pub client: ArchRpcClient,
     pub autara_oracle_program_id: Pubkey,
-    pub network: Network,
 }
 
 impl AutaraPythPusherClient {
     pub async fn push_pyth_price(
         &self,
-        signer: &Keypair,
+        signer: &ArchSigner,
         pyth_feed_id: [u8; 32],
         oracle: &PythPrice,
     ) -> anyhow::Result<()> {
-        let key = Pubkey(signer.x_only_public_key().0.serialize());
+        let key = signer.pubkey();
         let pyth_account = get_pyth_account(&self.autara_oracle_program_id, pyth_feed_id);
         let ixs = vec![Instruction {
             program_id: self.autara_oracle_program_id,
@@ -221,23 +243,23 @@ impl AutaraPythPusherClient {
             ],
             data: bytemuck::bytes_of(oracle).to_vec(),
         }];
-        build_and_send_tx(&self.client, &key, signer, &ixs, self.network).await
+        build_and_send_tx(&self.client, signer, &ixs).await
     }
 }
 
 pub async fn build_and_send_tx(
     client: &ArchRpcClient,
-    signer_pk: &Pubkey,
-    signer: &Keypair,
+    signer: &ArchSigner,
     ixs: &[Instruction],
-    bitcoin_network: Network,
 ) -> anyhow::Result<()> {
+    // Sign late: fresh blockhash immediately before signing, sign → broadcast
+    // as one motion.
     let message = ArchMessage::new(
         ixs,
-        Some(*signer_pk),
+        Some(signer.pubkey()),
         client.get_best_block_hash().await?.try_into()?,
     );
-    let tx = build_and_sign_transaction(message, vec![*signer], bitcoin_network)?;
+    let tx = signer.sign_transaction(message).await?;
     let sig = hex::encode(&tx.signatures.first().context("no transaction ID")?.0);
     tracing::info!("Sending {sig:?}");
     let txids = client.send_transactions(vec![tx]).await?;

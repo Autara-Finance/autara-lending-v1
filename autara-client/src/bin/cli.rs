@@ -26,6 +26,7 @@ use autara_pyth::{
     AutaraPythPusherClient,
 };
 use clap::{Parser, Subcommand};
+use cosigner_client::ArchSigner;
 use tracing_subscriber::{util::SubscriberInitExt, EnvFilter};
 
 #[derive(Parser)]
@@ -1166,10 +1167,13 @@ async fn handle_oracle_command(
             let pusher = AutaraPythPusherClient {
                 client: rpc.clone(),
                 autara_oracle_program_id: oracle_program_id,
-                network,
             };
             pusher
-                .push_pyth_price(&signer_keypair, feed_id, &pyth_price)
+                .push_pyth_price(
+                    &ArchSigner::local(signer_keypair).with_network(network),
+                    feed_id,
+                    &pyth_price,
+                )
                 .await?;
 
             let oracle_account = get_pyth_account(&oracle_program_id, feed_id);
@@ -1207,9 +1211,8 @@ async fn handle_oracle_command(
             fetch_and_push_feeds(
                 rpc,
                 &oracle_program_id,
-                &signer_keypair,
+                &ArchSigner::local(signer_keypair).with_network(network),
                 &feeds,
-                network,
                 push_interval,
                 None,
             )

@@ -19,8 +19,12 @@ use autara_lib::ixs::CreateMarketInstruction;
 use autara_lib::oracle::oracle_config::OracleConfig;
 use autara_lib::pda::find_market_pda;
 use autara_lib::state::market_config::LtvConfig;
-use autara_pyth::{fetch_and_push_feeds, BTC_FEED, ETH_FEED, USDC_FEED};
+use autara_pyth::{
+    fetch_and_push_feeds, pusher_signer_from_env, signer_env_configured, BTC_FEED, ETH_FEED,
+    USDC_FEED,
+};
 use clap::Parser;
+use cosigner_client::{ArchSigner, ArchSignerT};
 use jsonrpsee::server::{RpcServiceBuilder, Server};
 use serde::Deserialize;
 use tower_http::compression::CompressionLayer;
@@ -377,15 +381,28 @@ async fn main() -> Result<(), anyhow::Error> {
     if !feeds.is_empty() && !disable_price_pusher {
         tracing::info!("Spawning Pyth feed pusher for {} feeds", feeds.len());
         let pusher_client = arch_client.clone();
-        let pusher_signer = signer_keypair;
-        let to_airdrop = signer_pubkey;
+        // Signer seam: when COSIGNER_*/ARCH_KEY_PATH is set the environment
+        // selects the pusher's signer (the mainnet cutover points these at
+        // the arch-cosigner proxy, role "oracle"); otherwise keep signing
+        // with the legacy --signer key file.
+        let pusher_signer: ArchSigner = if signer_env_configured() {
+            let signer = pusher_signer_from_env(network)
+                .map_err(|e| anyhow!("resolving pusher signer from environment: {e}"))?;
+            tracing::info!(
+                "Pusher signing via env-selected signer as {}",
+                hex::encode(signer.pubkey().serialize())
+            );
+            signer
+        } else {
+            ArchSigner::local(signer_keypair).with_network(network)
+        };
+        let to_airdrop = pusher_signer.pubkey();
         tokio::spawn(async move {
             fetch_and_push_feeds(
                 &pusher_client,
                 &oracle_program_id,
                 &pusher_signer,
                 &feeds,
-                network,
                 autara_pyth::push_interval_from_env(),
                 None,
             )

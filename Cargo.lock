@@ -430,6 +430,7 @@ dependencies = [
  "borsh",
  "bytemuck",
  "clap",
+ "cosigner-client",
  "hex 0.4.3",
  "prometheus",
  "reqwest",

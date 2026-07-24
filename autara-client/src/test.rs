@@ -14,6 +14,7 @@ use autara_lib::{
     token::{create_ata_ix, get_associated_token_address},
 };
 use autara_pyth::{fetch_and_push_feeds, AutaraPythPusherClient};
+use cosigner_client::ArchSigner;
 
 use crate::config::path_from_workspace;
 
@@ -152,9 +153,12 @@ impl AutaraTestEnv {
         AutaraPythPusherClient {
             client: self.arch_client.clone(),
             autara_oracle_program_id: self.autara_oracle_program_pubkey,
-            network: BITCOIN_NETWORK,
         }
-        .push_pyth_price(&self.authority_keypair, self.supply_feed_id, &pyth)
+        .push_pyth_price(
+            &ArchSigner::local(self.authority_keypair).with_network(BITCOIN_NETWORK),
+            self.supply_feed_id,
+            &pyth,
+        )
         .await
     }
 
@@ -163,9 +167,12 @@ impl AutaraTestEnv {
         AutaraPythPusherClient {
             client: self.arch_client.clone(),
             autara_oracle_program_id: self.autara_oracle_program_pubkey,
-            network: BITCOIN_NETWORK,
         }
-        .push_pyth_price(&self.authority_keypair, self.collateral_feed_id, &pyth)
+        .push_pyth_price(
+            &ArchSigner::local(self.authority_keypair).with_network(BITCOIN_NETWORK),
+            self.collateral_feed_id,
+            &pyth,
+        )
         .await
     }
 
@@ -174,15 +181,18 @@ impl AutaraTestEnv {
         AutaraPythPusherClient {
             client: self.arch_client.clone(),
             autara_oracle_program_id: self.autara_oracle_program_pubkey,
-            network: BITCOIN_NETWORK,
         }
-        .push_pyth_price(&self.authority_keypair, feed_id, &pyth)
+        .push_pyth_price(
+            &ArchSigner::local(self.authority_keypair).with_network(BITCOIN_NETWORK),
+            feed_id,
+            &pyth,
+        )
         .await
     }
 
     pub fn spawn_pyth_pusher(&self) {
         let client = self.arch_client.clone();
-        let authority = self.authority_keypair.clone();
+        let authority = ArchSigner::local(self.authority_keypair).with_network(BITCOIN_NETWORK);
         let autara_oracle_program_id = self.autara_oracle_program_pubkey;
         let feeds = [
             hex::encode(self.supply_feed_id),
@@ -194,7 +204,6 @@ impl AutaraTestEnv {
                 &autara_oracle_program_id,
                 &authority,
                 &feeds,
-                BITCOIN_NETWORK,
                 autara_pyth::push_interval_from_env(),
                 None,
             )

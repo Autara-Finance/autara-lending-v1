@@ -1,11 +1,13 @@
 use std::net::SocketAddr;
 
 use arch_program::bitcoin::Network;
-use arch_sdk::{generate_new_keypair, with_secret_key_file, ArchRpcClient, Config};
+use arch_sdk::{generate_new_keypair, ArchRpcClient, Config};
 use autara_pyth::{
-    fetch_and_push_feeds, push_interval_from_env, start_metrics_server, PusherMetrics,
+    fetch_and_push_feeds, push_interval_from_env, pusher_signer_from_env, signer_env_configured,
+    start_metrics_server, PusherMetrics,
 };
 use clap::Parser;
+use cosigner_client::{ArchSigner, ArchSignerT};
 
 #[derive(clap::Parser, Debug)]
 struct Args {
@@ -80,23 +82,35 @@ pub async fn main() {
         .init();
     let config = make_config(&args.rpc, args.network);
     let client = ArchRpcClient::new(&config);
-    let authority_keypair = match &args.signer {
-        // Pre-funded signer: mainnet has no faucet, so the key must already hold funds.
-        Some(path) => {
-            with_secret_key_file(path)
+    // Signer seam, in priority order:
+    //   COSIGNER_*/ARCH_KEY_PATH env -> env-selected signer (the mainnet
+    //       cutover points COSIGNER_* at the arch-cosigner proxy, role
+    //       "oracle", intent "push-price");
+    //   --signer <key file>          -> pre-funded local key (legacy flow);
+    //   neither                      -> throwaway faucet key (testnet only).
+    let signer: ArchSigner = if signer_env_configured() {
+        pusher_signer_from_env(args.network).expect("resolving pusher signer from environment")
+    } else {
+        match &args.signer {
+            // Pre-funded signer: mainnet has no faucet, so the key must already hold funds.
+            Some(path) => ArchSigner::local_from_key_file(path)
                 .unwrap_or_else(|e| panic!("failed to load signer key from {path}: {e}"))
-                .0
-        }
-        // No --signer: generate a throwaway key funded by the faucet (testnet/localnet only).
-        None => {
-            let (keypair, _, _) = generate_new_keypair(args.network);
-            client
-                .create_and_fund_account_with_faucet(&keypair)
-                .await
-                .expect("faucet funding failed (mainnet has no faucet — pass --signer)");
-            keypair
+                .with_network(args.network),
+            // No --signer: generate a throwaway key funded by the faucet (testnet/localnet only).
+            None => {
+                let (keypair, _, _) = generate_new_keypair(args.network);
+                client
+                    .create_and_fund_account_with_faucet(&keypair)
+                    .await
+                    .expect("faucet funding failed (mainnet has no faucet — pass --signer)");
+                ArchSigner::local(keypair).with_network(args.network)
+            }
         }
     };
+    tracing::info!(
+        "pusher signing as {}",
+        hex::encode(signer.pubkey().serialize())
+    );
 
     let oracle_program_id =
         arch_program::pubkey::Pubkey::from_slice(&hex::decode(&args.program_id).unwrap());
@@ -115,9 +129,8 @@ pub async fn main() {
     fetch_and_push_feeds(
         &client,
         &oracle_program_id,
-        &authority_keypair,
+        &signer,
         &args.feeds,
-        args.network,
         push_interval,
         Some(metrics),
     )
