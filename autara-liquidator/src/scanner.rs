@@ -7,7 +7,7 @@ use autara_client::client::read::AutaraReadClient;
 use autara_client::client::single_thread_client::AutaraReadClientImpl;
 use autara_client::client::tx_broadcast::AutaraTxBroadcast;
 use autara_client::client::tx_builder::AutaraTransactionBuilder;
-use autara_client::cosigner_client::ArchSignerT;
+use autara_client::cosigner_client::{ArchSigner, ArchSignerT};
 use orca_whirlpools::SwapQuote;
 
 use crate::config::TokenFilter;
@@ -20,7 +20,7 @@ pub async fn scan_liquidatable_positions(
     token_filter: &TokenFilter,
     arch_client: &ArchRpcClient,
     autara_program_id: Pubkey,
-    signer: &dyn ArchSignerT,
+    signer: &ArchSigner,
     blockhash_cache: &BlockhashCache,
     dry_run: bool,
 ) {

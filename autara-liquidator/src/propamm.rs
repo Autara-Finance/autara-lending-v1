@@ -21,7 +21,7 @@ use arch_sdk::arch_program::{
     sanitized::ArchMessage, system_program::SYSTEM_PROGRAM_ID,
 };
 use arch_sdk::{ArchRpcClient, Status};
-use autara_client::cosigner_client::ArchSignerT;
+use autara_client::cosigner_client::{ArchSigner, ArchSignerT};
 use autara_lib::token::get_associated_token_address;
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -189,7 +189,7 @@ impl PropAmm {
     pub async fn execute_swap(
         &self,
         arch_client: &ArchRpcClient,
-        user_signer: &dyn ArchSignerT,
+        user_signer: &ArchSigner,
         collateral_mint: &Pubkey,
         supply_mint: &Pubkey,
         amount_in: u64,
