@@ -19,6 +19,7 @@ use autara_lib::{
     ixs::{UpdateConfigInstruction, UpdateGlobalConfigInstruction},
     token::get_associated_token_address,
 };
+use cosigner_client::ArchSignerT;
 
 use crate::client::{blockhash_cache::BlockhashCache, read::AutaraReadClient};
 
@@ -700,5 +701,20 @@ impl TransactionToSign {
             signatures,
             message: self.message.clone(),
         }
+    }
+
+    /// Sign via the cosigner_client::ArchSignerT seam — one code path for a
+    /// local key (ARCH_KEY_PATH) and the remote co-signer proxy.
+    /// `local_cosigners` are extra in-process keypairs (venue co-signers);
+    /// signatures are placed by pubkey position in account_keys, exactly
+    /// like [`TransactionToSign::sign`].
+    pub async fn sign_with(
+        &self,
+        signer: &cosigner_client::ArchSigner,
+        local_cosigners: &[Keypair],
+    ) -> Result<RuntimeTransaction, cosigner_client::SignError> {
+        signer
+            .sign_transaction_mixed(self.message.clone(), local_cosigners)
+            .await
     }
 }

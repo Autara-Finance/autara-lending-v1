@@ -17,14 +17,11 @@
 
 use anyhow::{Context, Result};
 use arch_sdk::arch_program::{
-    account::AccountMeta,
-    bitcoin::{key::Keypair, Network},
-    instruction::Instruction,
-    pubkey::Pubkey,
-    sanitized::ArchMessage,
-    system_program::SYSTEM_PROGRAM_ID,
+    account::AccountMeta, bitcoin::key::Keypair, instruction::Instruction, pubkey::Pubkey,
+    sanitized::ArchMessage, system_program::SYSTEM_PROGRAM_ID,
 };
-use arch_sdk::{build_and_sign_transaction, ArchRpcClient, Status};
+use arch_sdk::{ArchRpcClient, Status};
+use autara_client::cosigner_client::ArchSignerT;
 use autara_lib::token::get_associated_token_address;
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -186,19 +183,19 @@ impl PropAmm {
     }
 
     /// Execute a `collateral_mint -> supply_mint` swap of `amount_in` as a standalone tx,
-    /// signed by [quote_signer, user]. Returns the supply-token output (nominal) on success.
-    #[allow(clippy::too_many_arguments)]
+    /// signed by [quote_signer, user]. The user signature comes from `user_signer`
+    /// (local key or remote co-signer proxy); the quote_signer key is held locally.
+    /// Returns the supply-token output (nominal) on success.
     pub async fn execute_swap(
         &self,
         arch_client: &ArchRpcClient,
-        user_kp: &Keypair,
-        user_pk: Pubkey,
+        user_signer: &dyn ArchSignerT,
         collateral_mint: &Pubkey,
         supply_mint: &Pubkey,
         amount_in: u64,
         price: f64,
-        network: Network,
     ) -> Result<u64> {
+        let user_pk = user_signer.pubkey();
         let (side, base_amount, quote_amount, out) = self
             .quote(collateral_mint, supply_mint, amount_in, price)
             .context("propamm cannot quote this pair/amount")?;
@@ -234,13 +231,12 @@ impl PropAmm {
             self.quote_mint,
         );
 
-        let blockhash = arch_client.get_best_block_hash().await?.try_into()?;
+        let blockhash = arch_client.get_best_block_hash().await?;
         let message = ArchMessage::new(&[ix], Some(user_pk), blockhash);
-        let tx = build_and_sign_transaction(
-            message,
-            vec![self.quote_signer_kp, *user_kp],
-            network,
-        )?;
+        let tx = user_signer
+            .sign_transaction_mixed(message, &[self.quote_signer_kp])
+            .await
+            .context("propamm swap signing failed")?;
         let txids = arch_client.send_transactions(vec![tx]).await?;
         let processed = arch_client.wait_for_processed_transactions(txids).await?;
         let result = processed.first().context("propamm: no tx processed")?;

@@ -1,7 +1,6 @@
 {
   "rpc_url": "https://rpc.mainnet.arch.network",
   "autara_program_id": "19da5f9b75103d4384b5b78e4b7535198ab0c788578df142db5992a62e30bad0",
-  "liquidator_keypair": "keys/liquidator.key",
   "network": "mainnet",
   "whirlpools_config": "091a35a0f3dba0abd49a34d103ebc500e77ad1af30afa1bb028271d6ee0dec7f",
   "poll_interval_secs": 5,

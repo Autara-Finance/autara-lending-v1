@@ -1,10 +1,7 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, Result};
-use arch_sdk::arch_program::{
-    bitcoin::{key::Keypair, Network},
-    pubkey::Pubkey,
-};
+use arch_sdk::arch_program::{bitcoin::Network, pubkey::Pubkey};
 use clap::Parser;
 use serde::Deserialize;
 
@@ -23,8 +20,6 @@ pub struct LiquidatorConfig {
     pub rpc_url: String,
     /// Autara lending program ID (hex)
     pub autara_program_id: String,
-    /// Path to the liquidator keypair file
-    pub liquidator_keypair: String,
     /// Whirlpools config address (hex). If omitted, uses the default.
     pub whirlpools_config: Option<String>,
     /// Bitcoin network for signing. One of: "regtest", "testnet", "signet", "bitcoin".
@@ -77,11 +72,6 @@ pub struct PropAmmConfig {
 }
 
 impl LiquidatorConfig {
-    pub fn load_keypair(&self) -> Result<(Keypair, Pubkey)> {
-        arch_sdk::with_secret_key_file(&self.liquidator_keypair)
-            .context("failed to load liquidator keypair")
-    }
-
     /// Build the PropAMM venue client if configured.
     pub fn build_propamm(&self) -> Result<Option<crate::propamm::PropAmm>> {
         let Some(c) = &self.propamm else {

@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
 use arch_sdk::ArchRpcClient;
-use arch_sdk::arch_program::bitcoin::Network;
-use arch_sdk::arch_program::bitcoin::key::Keypair;
 use arch_sdk::arch_program::pubkey::Pubkey;
 use autara_client::client::blockhash_cache::BlockhashCache;
 use autara_client::client::read::AutaraReadClient;
 use autara_client::client::single_thread_client::AutaraReadClientImpl;
 use autara_client::client::tx_broadcast::AutaraTxBroadcast;
 use autara_client::client::tx_builder::AutaraTransactionBuilder;
+use autara_client::cosigner_client::ArchSignerT;
 use orca_whirlpools::SwapQuote;
 
 use crate::config::TokenFilter;
@@ -21,12 +20,11 @@ pub async fn scan_liquidatable_positions(
     token_filter: &TokenFilter,
     arch_client: &ArchRpcClient,
     autara_program_id: Pubkey,
-    keypair: &Keypair,
-    signer: Pubkey,
+    signer: &dyn ArchSignerT,
     blockhash_cache: &BlockhashCache,
-    network: Network,
     dry_run: bool,
 ) {
+    let signer_pubkey = signer.pubkey();
     let mut liquidatable_count = 0u64;
 
     let mut biggest_borrow: Option<(Pubkey, Pubkey, u64)> = None;
@@ -37,7 +35,7 @@ pub async fn scan_liquidatable_positions(
         arch_client,
         autara_read_client: client,
         autara_program_id,
-        authority_key: signer,
+        authority_key: signer_pubkey,
         blockhash_cache: Some(blockhash_cache),
     };
 
@@ -139,7 +137,12 @@ pub async fn scan_liquidatable_positions(
             let clamm: Option<(Pubkey, orca_whirlpools::SwapInstructions, u64)> =
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(10),
-                    router.best_quote_exact_in(collateral_mint, supply_mint, collateral_atoms, Some(signer)),
+                    router.best_quote_exact_in(
+                        collateral_mint,
+                        supply_mint,
+                        collateral_atoms,
+                        Some(signer_pubkey),
+                    ),
                 )
                 .await
                 {
@@ -198,12 +201,38 @@ pub async fn scan_liquidatable_positions(
             let use_propamm = propamm_out > clamm_out;
 
             if dry_run {
-                tracing::info!(
-                    "DRY-RUN: would liquidate position={:?} market={:?} via {}; not broadcasting",
-                    position_key,
-                    market_key,
-                    if use_propamm { "PropAMM" } else { "CLAMM" },
-                );
+                // Build AND sign the liquidate tx for the winning route (this
+                // exercises the full signer path, incl. the remote co-signer
+                // proxy) — skip only the broadcast.
+                let ix_callback = if use_propamm {
+                    None
+                } else {
+                    clamm.and_then(|(_, swap_ix, _)| swap_ix.instructions.into_iter().next())
+                };
+                match tx_builder
+                    .liquidate(market_key, &position_key, None, None, ix_callback)
+                    .await
+                {
+                    Ok(tx_to_sign) => match tx_to_sign.sign_with(signer, &[]).await {
+                        Ok(signed_tx) => tracing::info!(
+                            "DRY-RUN: built+signed liquidate tx ({} signature(s)) for position={:?} market={:?} via {}; not broadcasting",
+                            signed_tx.signatures.len(),
+                            position_key,
+                            market_key,
+                            if use_propamm { "PropAMM" } else { "CLAMM" },
+                        ),
+                        Err(e) => tracing::error!(
+                            "DRY-RUN: failed to sign liquidate tx for position={:?}: {:#}",
+                            position_key,
+                            e,
+                        ),
+                    },
+                    Err(e) => tracing::error!(
+                        "DRY-RUN: failed to build liquidate tx for position={:?}: {:#}",
+                        position_key,
+                        e,
+                    ),
+                }
                 continue;
             }
 
@@ -231,7 +260,13 @@ pub async fn scan_liquidatable_positions(
                             break 'propamm false;
                         }
                     };
-                    let signed_tx = tx_to_sign.sign(&[keypair.clone()], network);
+                    let signed_tx = match tx_to_sign.sign_with(signer, &[]).await {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            tracing::error!("Failed to sign liquidate tx (PropAMM route): {:#}", e);
+                            break 'propamm false;
+                        }
+                    };
                     match tx_broadcast.broadcast_transaction(signed_tx).await {
                         Ok(events) => tracing::info!(
                             "Liquidation SUCCESS (no-callback, PropAMM route) position={:?} market={:?} events={:?}",
@@ -253,7 +288,14 @@ pub async fn scan_liquidatable_positions(
                     let p = propamm.expect("propamm route implies propamm configured");
                     let price = propamm_quote.expect("propamm route implies a quote").0;
                     match p
-                        .execute_swap(arch_client, keypair, signer, &collateral_mint, &supply_mint, collateral_atoms, price, network)
+                        .execute_swap(
+                            arch_client,
+                            signer,
+                            &collateral_mint,
+                            &supply_mint,
+                            collateral_atoms,
+                            price,
+                        )
                         .await
                     {
                         Ok(out) => tracing::info!(
@@ -303,7 +345,13 @@ pub async fn scan_liquidatable_positions(
                         continue;
                     }
                 };
-                let signed_tx = tx_to_sign.sign(&[keypair.clone()], network);
+                let signed_tx = match tx_to_sign.sign_with(signer, &[]).await {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        tracing::error!("Failed to sign liquidate tx: {:#}", e);
+                        continue;
+                    }
+                };
                 match tx_broadcast.broadcast_transaction(signed_tx).await {
                     Ok(events) => tracing::info!(
                         "Liquidation SUCCESS (CLAMM callback) position={:?} market={:?} events={:?}",

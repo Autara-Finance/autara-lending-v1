@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use arch_sdk::ArchRpcClient;
 use autara_client::client::blockhash_cache::BlockhashCache;
 use autara_client::client::single_thread_client::AutaraReadClientImpl;
+use autara_client::cosigner_client::{ArchSigner, ArchSignerT};
 use clap::Parser;
 use itertools::Itertools;
 use orca_whirlpools::{WhirlpoolsConfigInput, set_whirlpools_config_address};
@@ -34,12 +35,17 @@ async fn main() -> Result<()> {
     let autara_program_id = parse_hex_pubkey(&config.autara_program_id)?;
     let network = config.parse_network()?;
     let dry_run = config.dry_run;
-    let (liquidator_keypair, liquidator_pubkey) = config.load_keypair()?;
+    let signer = ArchSigner::from_env()
+        .context("failed to resolve signer from env (COSIGNER_* or ARCH_KEY_PATH)")?
+        .with_network(network)
+        .with_intent("liquidate");
+    let liquidator_pubkey = signer.pubkey();
     tracing::info!(
         ?liquidator_pubkey,
         ?network,
         dry_run,
-        "Loaded liquidator keypair"
+        remote = signer.is_remote(),
+        "Resolved liquidator signer"
     );
 
     let token_filter = TokenFilter::from_config(&config.restrict_tokens)?;
@@ -115,10 +121,8 @@ async fn main() -> Result<()> {
                     &token_filter,
                     &arch_client,
                     autara_program_id,
-                    &liquidator_keypair,
-                    liquidator_pubkey,
+                    &signer,
                     &blockhash_cache,
-                    network,
                     dry_run,
                 )
                 .await;
