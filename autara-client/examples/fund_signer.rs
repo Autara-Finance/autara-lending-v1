@@ -8,7 +8,7 @@
 
 use anyhow::{bail, Context, Result};
 use arch_sdk::arch_program::bitcoin::Network;
-use arch_sdk::{with_secret_key_file, AsyncArchRpcClient, Config};
+use arch_sdk::{with_secret_key_file, ArchRpcClient, Config};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
         network,
         titan_url: String::new(),
     };
-    let client = AsyncArchRpcClient::new(&config);
+    let client = ArchRpcClient::new(&config);
     client
         .create_and_fund_account_with_faucet(&keypair)
         .await

@@ -1,4 +1,4 @@
-use arch_sdk::{arch_program::pubkey::Pubkey, AsyncArchRpcClient, Config};
+use arch_sdk::{arch_program::pubkey::Pubkey, ArchRpcClient, Config};
 use autara_client::{
     client::client_with_signer::AutaraFullClientWithSigner,
     config::{autara_oracle_stage_program_id, autara_stage_admin, autara_stage_program_id},
@@ -14,13 +14,13 @@ fn main() -> anyhow::Result<()> {
         arch_node_url: "https://rpc.testnet.arch.network".into(),
         titan_url: "".into(),
     };
-    deploy_new_autara(&config);
-    deploy_new_autara_pyth(&config);
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
         .block_on(async {
-            let arch_client = AsyncArchRpcClient::new(&config);
+            deploy_new_autara(&config).await;
+            deploy_new_autara_pyth(&config).await;
+            let arch_client = ArchRpcClient::new(&config);
             let test_env = AutaraTestEnv::new(
                 arch_client.clone(),
                 autara_stage_program_id(),

@@ -1,4 +1,4 @@
-use arch_sdk::{with_secret_key_file, AsyncArchRpcClient, Config};
+use arch_sdk::{with_secret_key_file, ArchRpcClient, Config};
 use autara_lib::oracle::pyth::{PythPrice, PythPriceAccount};
 use autara_pyth::get_pyth_account;
 use std::mem::size_of;
@@ -21,7 +21,7 @@ async fn main() {
         network: arch_program::bitcoin::Network::Testnet,
         titan_url: String::new(),
     };
-    let client = AsyncArchRpcClient::new(&config);
+    let client = ArchRpcClient::new(&config);
 
     let feeds = [
         (

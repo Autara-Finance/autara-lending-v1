@@ -22,7 +22,7 @@ use arch_sdk::{
     arch_program::{
         bitcoin::key::Keypair, bitcoin::Network, pubkey::Pubkey, sanitized::ArchMessage,
     },
-    build_and_sign_transaction, with_secret_key_file, AsyncArchRpcClient, Config, Status,
+    build_and_sign_transaction, with_secret_key_file, ArchRpcClient, Config, Status,
 };
 use autara_client::{
     client::{
@@ -159,7 +159,7 @@ async fn print_balances(client: &Client, user: &Pubkey, ausd: &Pubkey, abtc: &Pu
 }
 
 async fn mint_to_user(
-    rpc: &AsyncArchRpcClient,
+    rpc: &ArchRpcClient,
     auth_path: &str,
     mint: &Pubkey,
     user: &Pubkey,
@@ -250,7 +250,7 @@ async fn main() -> Result<()> {
         network,
         titan_url: String::new(),
     };
-    let rpc = AsyncArchRpcClient::new(&config);
+    let rpc = ArchRpcClient::new(&config);
 
     let program_id = pk(&program_id_hex);
     let market = pk(&market_hex);

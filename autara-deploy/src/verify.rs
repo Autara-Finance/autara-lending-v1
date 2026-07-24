@@ -25,7 +25,7 @@ use anyhow::{anyhow, Context, Result};
 use apl_token::state::Mint;
 use arch_program::program_pack::Pack;
 use arch_program::pubkey::Pubkey;
-use arch_sdk::AsyncArchRpcClient;
+use arch_sdk::ArchRpcClient;
 
 use autara_lib::math::ifixed_point::IFixedPoint;
 use autara_lib::oracle::pyth::PythPriceAccount;
@@ -102,7 +102,7 @@ pub async fn run(
     server_url: Option<String>,
     expect_supply: bool,
 ) -> Result<()> {
-    let rpc = AsyncArchRpcClient::new(&cfg.arch_config()?);
+    let rpc = ArchRpcClient::new(&cfg.arch_config()?);
 
     // Resolve the deployed program / oracle ids and the admin (curator) from the
     // configured key paths, mirroring the deploy binary.
@@ -140,7 +140,7 @@ pub async fn run(
 }
 
 /// (a) program account present, executable, and owned by a loader.
-async fn verify_program(rpc: &AsyncArchRpcClient, program_id: Pubkey, report: &mut Report) {
+async fn verify_program(rpc: &ArchRpcClient, program_id: Pubkey, report: &mut Report) {
     match rpc.read_account_info(program_id).await {
         Ok(info) if info.is_executable => report.pass(
             "program.executable",
@@ -156,7 +156,7 @@ async fn verify_program(rpc: &AsyncArchRpcClient, program_id: Pubkey, report: &m
 
 /// (b) global-config PDA exists and decodes.
 async fn verify_global_config(
-    rpc: &AsyncArchRpcClient,
+    rpc: &ArchRpcClient,
     program_id: Pubkey,
     expected_admin: Pubkey,
     report: &mut Report,
@@ -193,7 +193,7 @@ async fn verify_global_config(
 
 /// (c) every configured mint exists with the expected decimals (and supply).
 async fn verify_mints(
-    rpc: &AsyncArchRpcClient,
+    rpc: &ArchRpcClient,
     cfg: &DeployConfig,
     expect_supply: bool,
     report: &mut Report,
@@ -232,7 +232,7 @@ async fn verify_mints(
 /// (d) each configured market PDA exists with expected mints/LTV/curator, and
 /// (e) the Pyth oracle PDA for each of its feeds is owned-by-oracle and fresh.
 async fn verify_markets(
-    rpc: &AsyncArchRpcClient,
+    rpc: &ArchRpcClient,
     cfg: &DeployConfig,
     program_id: Pubkey,
     oracle_id: Pubkey,
@@ -290,7 +290,7 @@ async fn verify_markets(
 }
 
 async fn verify_oracle(
-    rpc: &AsyncArchRpcClient,
+    rpc: &ArchRpcClient,
     oracle_id: Pubkey,
     feed_id: [u8; 32],
     label: &str,

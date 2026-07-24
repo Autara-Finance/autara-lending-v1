@@ -79,7 +79,7 @@ fn pv(b: bool) -> &'static str {
 
 /// Sign + send + wait, returning the txid string. Fails loudly on a failed tx.
 async fn send_tx(
-    rpc: &arch_sdk::AsyncArchRpcClient,
+    rpc: &arch_sdk::ArchRpcClient,
     network: Network,
     kp: &Keypair,
     tx: TransactionToSign,

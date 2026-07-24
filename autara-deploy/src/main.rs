@@ -20,7 +20,7 @@ use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Context, Result};
 use arch_program::pubkey::Pubkey;
-use arch_sdk::{AsyncArchRpcClient, Config as ArchConfig};
+use arch_sdk::{ArchRpcClient, Config as ArchConfig};
 use clap::{Args, Parser, Subcommand};
 use sha2::{Digest, Sha256};
 
@@ -221,7 +221,7 @@ async fn run_check_balance(args: CheckBalanceArgs) -> Result<()> {
         arch_node_url: rpc_url.clone(),
         titan_url: String::new(),
     };
-    let rpc = AsyncArchRpcClient::new(&config);
+    let rpc = ArchRpcClient::new(&config);
 
     println!("network:  {}", network.as_str());
     println!("rpc_url:  {rpc_url}");
@@ -597,15 +597,15 @@ fn main() -> Result<()> {
         println!("mainnet: deployer + admin funding verified");
     }
 
-    // Deploy the programs (SYNCHRONOUS ProgramDeployer — outside the runtime).
+    // Deploy the programs (async ProgramDeployer as of arch_sdk 0.6.7).
     if step_deploy_program {
         artifact.program_elf_sha256 = Some(sha256_file(&cfg.program_elf_path)?);
-        ctx.deploy_program(
+        rt.block_on(ctx.deploy_program(
             "autara_program".to_string(),
             program_kp,
             deployer_kp,
             cfg.program_elf_path.clone(),
-        )?;
+        ))?;
         println!("deployed autara-program {program_pubkey}");
     } else if Path::new(&cfg.program_elf_path).exists() {
         artifact.program_elf_sha256 = sha256_file(&cfg.program_elf_path).ok();
@@ -613,12 +613,12 @@ fn main() -> Result<()> {
 
     if step_deploy_oracle {
         artifact.oracle_elf_sha256 = Some(sha256_file(&cfg.oracle_elf_path)?);
-        ctx.deploy_program(
+        rt.block_on(ctx.deploy_program(
             "autara_oracle".to_string(),
             oracle_kp,
             deployer_kp,
             cfg.oracle_elf_path.clone(),
-        )?;
+        ))?;
         println!("deployed autara-oracle {oracle_pubkey}");
     } else if Path::new(&cfg.oracle_elf_path).exists() {
         artifact.oracle_elf_sha256 = sha256_file(&cfg.oracle_elf_path).ok();

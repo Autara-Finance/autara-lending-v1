@@ -7,7 +7,7 @@ use arch_program::bitcoin::Network as BitcoinNetwork;
 use arch_program::{bitcoin::key::Keypair, instruction::Instruction, pubkey::Pubkey};
 use arch_sdk::{
     arch_program::sanitized::ArchMessage, build_and_sign_transaction, with_secret_key_file,
-    AsyncArchRpcClient, Config, ProgramDeployer, Status,
+    ArchRpcClient, Config, ProgramDeployer, Status,
 };
 
 /// Load a secp256k1 keypair from a file written by `arch-cli` (a hex secret-key
@@ -20,7 +20,7 @@ pub fn load_keypair(path: &str) -> Result<(Keypair, Pubkey)> {
 /// Holds the async RPC client (reads, sends) plus the SDK config used by the
 /// synchronous `ProgramDeployer`.
 pub struct RpcContext {
-    pub rpc: AsyncArchRpcClient,
+    pub rpc: ArchRpcClient,
     config: Config,
     network: BitcoinNetwork,
     payer: Keypair,
@@ -30,7 +30,7 @@ pub struct RpcContext {
 impl RpcContext {
     pub fn new(config: Config, payer: Keypair, payer_pubkey: Pubkey) -> Self {
         Self {
-            rpc: AsyncArchRpcClient::new(&config),
+            rpc: ArchRpcClient::new(&config),
             network: config.network,
             config,
             payer,
@@ -92,23 +92,21 @@ impl RpcContext {
     /// Deploy (or resume the deploy of) a program ELF using the SDK's
     /// `ProgramDeployer`, mirroring the repo's existing deploy binary.
     ///
-    /// `ProgramDeployer` is SYNCHRONOUS and drives its own blocking client, so
-    /// this MUST be called from outside any active async runtime (the caller
-    /// runs it between `block_on` sections). It is idempotent: an
+    /// `ProgramDeployer` is async as of arch_sdk 0.6.7 (the blocking deployer
+    /// is no longer exported); the caller drives this with `rt.block_on(..)`
+    /// between its other runtime sections. It is idempotent: an
     /// already-deployed program is treated as success.
-    pub fn deploy_program(
+    pub async fn deploy_program(
         &self,
         program_name: String,
         program_kp: Keypair,
         authority_kp: Keypair,
         elf_path: String,
     ) -> Result<()> {
-        match ProgramDeployer::new(&self.config).try_deploy_program(
-            program_name,
-            program_kp,
-            authority_kp,
-            &elf_path,
-        ) {
+        match ProgramDeployer::new(&self.config)
+            .try_deploy_program(program_name, program_kp, authority_kp, &elf_path)
+            .await
+        {
             Ok(_) => Ok(()),
             Err(e) => {
                 let msg = e.to_string();

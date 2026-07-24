@@ -15,7 +15,7 @@
 use anyhow::{anyhow, Context, Result};
 use arch_sdk::{
     arch_program::{bitcoin::Network, pubkey::Pubkey, sanitized::ArchMessage},
-    build_and_sign_transaction, with_secret_key_file, AsyncArchRpcClient, Config, Status,
+    build_and_sign_transaction, with_secret_key_file, ArchRpcClient, Config, Status,
 };
 use autara_lib::token::{create_ata_ix, get_associated_token_address};
 
@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
         network,
         titan_url: String::new(),
     };
-    let rpc = AsyncArchRpcClient::new(&config);
+    let rpc = ArchRpcClient::new(&config);
 
     let (from_kp, from_pk) =
         with_secret_key_file(&env("XFER_FROM_KEY")).map_err(|e| anyhow!("load key: {e}"))?;

@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use arch_program::bitcoin::Network;
-use arch_sdk::{generate_new_keypair, with_secret_key_file, AsyncArchRpcClient, Config};
+use arch_sdk::{generate_new_keypair, with_secret_key_file, ArchRpcClient, Config};
 use autara_pyth::{
     fetch_and_push_feeds, push_interval_from_env, start_metrics_server, PusherMetrics,
 };
@@ -79,7 +79,7 @@ pub async fn main() {
         )
         .init();
     let config = make_config(&args.rpc, args.network);
-    let client = AsyncArchRpcClient::new(&config);
+    let client = ArchRpcClient::new(&config);
     let authority_keypair = match &args.signer {
         // Pre-funded signer: mainnet has no faucet, so the key must already hold funds.
         Some(path) => {
