@@ -12,14 +12,10 @@ use crate::{
 /// Autara rust version of the AdaptiveCurveIrm used in [Morpho](https://github.com/morpho-org/morpho-blue-irm/blob/main/src/adaptive-curve-irm/AdaptiveCurveIrm.sol)
 ///
 /// NOTE :
-/// If a market using this curve stays at extreme
-/// utilization (near 100%) and no transaction calls `sync_clock` for ~1.1+ years, the
-/// `linear_adaptation` value can exceed the domain of `checked_exp()` (~54.75), causing
-/// `new_rate_at_target` to permanently fail. Because `last_update_unix_timestamp` is only
-/// advanced on success, subsequent calls accumulate even larger elapsed times and also fail.
-/// In practice this is extremely unlikely since any supply/borrow/repay/liquidation triggers
-/// `sync_clock`, and the market would need to be completely idle at >90% utilization for over
-/// a year. A PoC test exists in `state/mod.rs::poc_adaptive_curve_can_perma_brick_market_after_long_idle`.
+/// `new_rate_at_target` clamps `linear_adaptation` to the `checked_exp()` domain
+/// (`[-33.21, 54.75]`) so a market idle at extreme utilization cannot permanently
+/// fail `sync_clock` (issue #47). See
+/// `state/mod.rs::adaptive_curve_survives_long_idle_at_high_utilisation`.
 #[repr(C)]
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Pod, Zeroable, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(
@@ -42,6 +38,12 @@ const MIN_RATE_AT_TARGET: InterestRatePerSecond =
     InterestRatePerSecond::const_from_apr(IFixedPoint::from_i64_u64_ratio(1, 100));
 const MAX_RATE_AT_TARGET: InterestRatePerSecond =
     InterestRatePerSecond::const_from_apr(IFixedPoint::from_i64_u64_ratio(200, 100));
+
+/// Safe clamp bounds for `linear_adaptation` passed to `checked_exp()`.
+/// Must match `IFixedPoint::checked_exp`: args ≤ -33.21 → Ok(0), args > 54.75 → Err.
+/// 54.75 is ln(I80F48::MAX) (see #30); 55.26 would still overflow after that fix.
+const MAX_SAFE_LINEAR_ADAPTATION: IFixedPoint = IFixedPoint::from_i64_u64_ratio(5475, 100);
+const MIN_SAFE_LINEAR_ADAPTATION: IFixedPoint = IFixedPoint::from_i64_u64_ratio(-3321, 100);
 
 impl AdaptiveInterestRateCurve {
     pub fn new() -> Self {
@@ -121,8 +123,19 @@ impl AdaptiveInterestRateCurve {
         start_rate_at_target: InterestRatePerSecond,
         linear_adaptation: IFixedPoint,
     ) -> LendingResult<InterestRatePerSecond> {
+        // Clamp linear_adaptation to the safe domain of checked_exp ([-33.21, 54.75]).
+        // Without this, a market idle at ≥90% utilization for ~1.1+ years permanently fails:
+        // checked_exp returns Err, last_update_unix_timestamp never advances, and every
+        // subsequent call accumulates more elapsed time — bricking the market forever.
+        let clamped = if linear_adaptation > MAX_SAFE_LINEAR_ADAPTATION {
+            MAX_SAFE_LINEAR_ADAPTATION
+        } else if linear_adaptation < MIN_SAFE_LINEAR_ADAPTATION {
+            MIN_SAFE_LINEAR_ADAPTATION
+        } else {
+            linear_adaptation
+        };
         start_rate_at_target
-            .safe_mul(linear_adaptation.checked_exp()?)
+            .safe_mul(clamped.checked_exp()?)
             .map(|x| InterestRatePerSecond::new(x).clamp(MIN_RATE_AT_TARGET, MAX_RATE_AT_TARGET))
     }
 }
