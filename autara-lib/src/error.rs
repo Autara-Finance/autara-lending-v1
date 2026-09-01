@@ -147,6 +147,8 @@ pub enum LendingError {
     LiquidatorAlreadyWhitelisted,
     #[error("Liquidator is not whitelisted")]
     LiquidatorNotWhitelisted,
+    #[error("No liquidation reducing the position loan-to-value (LTV) fits in the repay cap")]
+    LiquidationCannotReduceLtv,
 }
 
 impl LendingError {
