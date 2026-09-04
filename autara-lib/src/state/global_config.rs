@@ -3,9 +3,21 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::{
     error::{LendingError, LendingResult},
+    math::bps::ONE_IN_BPS,
     padding::Padding,
     pod_option::PodOption,
 };
+
+/// The protocol share is taken out of the lending fee, so it can never exceed 100%.
+/// A larger share would make the curator remainder negative when the fee is split.
+pub const MAX_PROTOCOL_FEE_SHARE_IN_BPS: u16 = ONE_IN_BPS as u16;
+
+fn validate_protocol_fee_share_in_bps(protocol_fee_share_in_bps: u16) -> LendingResult {
+    if protocol_fee_share_in_bps > MAX_PROTOCOL_FEE_SHARE_IN_BPS {
+        return Err(LendingError::FeeTooHigh.into());
+    }
+    Ok(())
+}
 
 crate::validate_struct!(GlobalConfig, 256, 2);
 
@@ -44,10 +56,12 @@ impl GlobalConfig {
         admin: Pubkey,
         fee_receiver: Pubkey,
         protocol_fee_share_in_bps: u16,
-    ) {
+    ) -> LendingResult {
+        validate_protocol_fee_share_in_bps(protocol_fee_share_in_bps)?;
         self.admin = admin;
         self.fee_receiver = fee_receiver;
         self.protocol_fee_share_in_bps = protocol_fee_share_in_bps;
+        Ok(())
     }
 
     pub fn admin(&self) -> &Pubkey {
@@ -88,9 +102,7 @@ impl GlobalConfig {
     }
 
     pub fn update_protocol_fee_share_in_bps(&mut self, new_fee: u16) -> LendingResult {
-        if new_fee > 10_000 {
-            return Err(LendingError::FeeTooHigh.into());
-        }
+        validate_protocol_fee_share_in_bps(new_fee)?;
         self.protocol_fee_share_in_bps = new_fee;
         Ok(())
     }
@@ -148,5 +160,48 @@ pub mod tests {
         assert!(!config.can_upgrade_nomination(&nominated_admin));
         assert!(config.can_update_config(&nominated_admin));
         assert!(!config.can_update_config(&admin));
+    }
+
+    #[test]
+    fn initialize_rejects_protocol_fee_share_above_one_hundred_percent() {
+        let mut config = GlobalConfig::default();
+        assert_eq!(
+            config
+                .initialize(
+                    Pubkey::new_unique(),
+                    Pubkey::new_unique(),
+                    MAX_PROTOCOL_FEE_SHARE_IN_BPS + 1,
+                )
+                .unwrap_err(),
+            LendingError::FeeTooHigh
+        );
+        assert_eq!(config.protocol_fee_share_in_bps(), 0);
+    }
+
+    #[test]
+    fn initialize_accepts_the_full_share() {
+        let mut config = GlobalConfig::default();
+        config
+            .initialize(
+                Pubkey::new_unique(),
+                Pubkey::new_unique(),
+                MAX_PROTOCOL_FEE_SHARE_IN_BPS,
+            )
+            .unwrap();
+        assert_eq!(
+            config.protocol_fee_share_in_bps(),
+            MAX_PROTOCOL_FEE_SHARE_IN_BPS
+        );
+    }
+
+    #[test]
+    fn initialize_and_update_share_the_same_bound() {
+        let too_high = MAX_PROTOCOL_FEE_SHARE_IN_BPS + 1;
+        let mut initialized = GlobalConfig::default();
+        assert!(initialized
+            .initialize(Pubkey::new_unique(), Pubkey::new_unique(), too_high)
+            .is_err());
+        let mut updated = test_global_config();
+        assert!(updated.update_protocol_fee_share_in_bps(too_high).is_err());
     }
 }

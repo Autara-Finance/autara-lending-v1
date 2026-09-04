@@ -41,6 +41,6 @@ pub fn process_create_global_config(
         data.admin,
         data.fee_receiver,
         data.protocol_fee_share_in_bps,
-    );
+    )?;
     Ok(())
 }
