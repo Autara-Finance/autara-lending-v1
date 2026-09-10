@@ -23,7 +23,7 @@ pub fn process_redeem_protocol_fees(
         &log_ix(
             program_id,
             accounts.market.key(),
-            AutaraEvent::ReedeemCuratorFees(ReedeemFeeEvent {
+            AutaraEvent::ReedeemProtocolFees(ReedeemFeeEvent {
                 market: *accounts.market.key(),
                 fee_receiver: accounts.receiver_supply_ata.owner,
                 fee_amount: to_withdraw,
