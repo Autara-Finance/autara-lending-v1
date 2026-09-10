@@ -1,7 +1,7 @@
 use autara_client::client::read::AutaraReadClient;
 use autara_lib::{
-    interest_rate::interest_rate_kind::InterestRateCurveKind, ixs::CreateMarketInstruction,
-    state::market_config::LtvConfig,
+    event::AutaraEvent, interest_rate::interest_rate_kind::InterestRateCurveKind,
+    ixs::CreateMarketInstruction, state::market_config::LtvConfig,
 };
 
 use crate::fixture::autara_fixture::{
@@ -62,11 +62,22 @@ async fn can_collect_curator_fees() {
     let snapshot = market_w.market().supply_vault().get_summary().unwrap();
     assert!(snapshot.pending_curator_fee_atoms != 0);
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    fixture
+    let events = fixture
         .curator_client()
         .reedeem_curator_fees(&market)
         .await
         .unwrap();
+    let [AutaraEvent::ReedeemCuratorFees(event)] = events.events.as_slice() else {
+        panic!(
+            "expected a single ReedeemCuratorFees event, got {:?}",
+            events
+        );
+    };
+    assert_eq!(event.market, market);
+    assert_eq!(
+        &event.fee_receiver,
+        fixture.curator_client().signer_pubkey()
+    );
     let balance_after = fixture
         .fetch_balance(fixture.curator_client().signer_pubkey())
         .await;
@@ -128,11 +139,20 @@ async fn can_collect_admin_fees() {
     let snapshot = market_w.market().supply_vault().get_summary().unwrap();
     assert!(snapshot.pending_protocol_fee_atoms != 0);
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    fixture
+    let events = fixture
         .admin_client()
         .reedeem_protocol_fees(&market)
         .await
         .unwrap();
+    // a protocol fee redemption must not be reported as a curator one
+    let [AutaraEvent::ReedeemProtocolFees(event)] = events.events.as_slice() else {
+        panic!(
+            "expected a single ReedeemProtocolFees event, got {:?}",
+            events
+        );
+    };
+    assert_eq!(event.market, market);
+    assert_eq!(&event.fee_receiver, fixture.admin_client().signer_pubkey());
     let balance_after = fixture
         .fetch_balance(fixture.admin_client().signer_pubkey())
         .await;
